@@ -5,6 +5,7 @@
   "license": "MIT",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "serve:http": "node dist/http/server.js",
     "test": "vitest run"
   },
   "devDependencies": {

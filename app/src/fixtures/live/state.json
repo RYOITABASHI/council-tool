@@ -1,0 +1,107 @@
+{
+  "meeting_state": "APPROVED",
+  "round_states": [
+    {
+      "round": "R0",
+      "phase": "frozen",
+      "opened_at": "2026-11-21T04:49:08.810Z",
+      "deadline_at": null,
+      "quorum": null
+    },
+    {
+      "round": "R1",
+      "phase": "frozen",
+      "opened_at": "2026-11-21T04:52:27.923Z",
+      "deadline_at": null,
+      "quorum": null
+    }
+  ],
+  "reception_table": [
+    {
+      "seat_id": "codex",
+      "round": "R0",
+      "state": "received",
+      "reason": null,
+      "current_packet_id": "fb36647a-2831-410c-bf66-cb7284a472a9",
+      "invalidated_packet_id": null
+    },
+    {
+      "seat_id": "claude",
+      "round": "R0",
+      "state": "received",
+      "reason": null,
+      "current_packet_id": "eae940e3-a805-45f9-883b-0bbf575febf3",
+      "invalidated_packet_id": null
+    },
+    {
+      "seat_id": "web",
+      "round": "R0",
+      "state": "received",
+      "reason": null,
+      "current_packet_id": "a6145e53-aa15-42c8-b201-6753543c78fc",
+      "invalidated_packet_id": null
+    },
+    {
+      "seat_id": "codex",
+      "round": "R1",
+      "state": "received",
+      "reason": null,
+      "current_packet_id": "a6b15f76-17ba-4e02-bffe-1f05557c2a5c",
+      "invalidated_packet_id": null
+    },
+    {
+      "seat_id": "claude",
+      "round": "R1",
+      "state": "received",
+      "reason": null,
+      "current_packet_id": "be448e62-aa58-4caf-ba33-69b337b7397d",
+      "invalidated_packet_id": null
+    },
+    {
+      "seat_id": "web",
+      "round": "R1",
+      "state": "received",
+      "reason": null,
+      "current_packet_id": "0823c285-75a4-4d1b-85b5-e66fe6247d56",
+      "invalidated_packet_id": null
+    }
+  ],
+  "timeout_exceeded": false,
+  "reopens": null,
+  "setup_version": 1,
+  "seats": [
+    {
+      "seat_id": "codex",
+      "connection": "cli",
+      "quota": 10,
+      "shared_materials": [],
+      "sharing_policy": "share_with_confirmation",
+      "tool_access": "none",
+      "flash": false,
+      "optional": false,
+      "seat_specific_materials": []
+    },
+    {
+      "seat_id": "claude",
+      "connection": "cli",
+      "quota": 10,
+      "shared_materials": [],
+      "sharing_policy": "share_with_confirmation",
+      "tool_access": "none",
+      "flash": false,
+      "optional": false,
+      "seat_specific_materials": []
+    },
+    {
+      "seat_id": "web",
+      "connection": "web",
+      "quota": 4,
+      "shared_materials": [],
+      "sharing_policy": "share_with_confirmation",
+      "tool_access": "none",
+      "flash": false,
+      "optional": false,
+      "seat_specific_materials": []
+    }
+  ]
+}
