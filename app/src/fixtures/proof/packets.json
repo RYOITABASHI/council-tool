@@ -1,0 +1,322 @@
+{
+  "superseded": [],
+  "setup_version": 1,
+  "new_packets": [
+    {
+      "packet": {
+        "header": {
+          "round": null,
+          "seat_id": null,
+          "supersedes": null,
+          "meeting_id": "47445a40-d277-45c5-9349-eb7189de2ce3",
+          "created_at": "2026-11-21T06:55:04.203Z",
+          "kind": "agenda",
+          "packet_id": "aeaf4e63-f5b0-4076-b6f0-fa01b0c72cba",
+          "packet_sha": "813b3d60dc10651cc37c804c04d8d71f5be808ebcd21c6a26a6fa9d120e20fec"
+        },
+        "body": {
+          "topic": "首脳会議ツール Phase 2（スマホアプリ）で、最初に実装すべき画面はどれか。候補はセッション一覧、会議画面（LINE風タイムライン）、承認画面。理由と、判断が変わる条件も述べること。",
+          "shared_materials": []
+        }
+      },
+      "packet_state": {
+        "version": "current",
+        "verification": "not_applicable",
+        "reception": "not_applicable"
+      },
+      "missing_records": [],
+      "declared_missing_records": []
+    },
+    {
+      "packet": {
+        "header": {
+          "seat_id": "codex-a",
+          "supersedes": null,
+          "round": "R0",
+          "meeting_id": "47445a40-d277-45c5-9349-eb7189de2ce3",
+          "created_at": "2026-11-21T06:55:25.900Z",
+          "kind": "answer",
+          "packet_id": "a0675193-effd-45ac-9cf8-876259513977",
+          "packet_sha": "d5f13ed02ce83121aaefc82f584f0c7947217489af19e09119e2ecacc412118c"
+        },
+        "body": {
+          "body": "最初に実装すべき画面は、会議画面（LINE風タイムライン）です。会議の発言と進行をスマホで読めることがアプリの中心的な価値であり、長文の可読性、更新の反映、時系列の追いやすさを早期に検証できます。まず既存の会議を指定して開ける最小構成とし、セッション一覧や承認画面はその後に加えます。\n\nただし、共有資料がないため、これは利用目的と既存機能についての仮定に基づく判断です。スマホの主目的が外出先での承認で、通知から対象の承認へ直接遷移できるなら、承認画面を先にします。また、多数のセッションから目的の会議を探すことが最大の課題で、会議を開く他の手段もないなら、セッション一覧を先にします。",
+          "claims": [
+            {
+              "statement": "初期実装は会議画面を優先する。",
+              "reversal_condition": "スマホでの主要な利用目的が承認であると判明する、またはセッションの発見・選択が会議利用の最大の障害であると判明する。"
+            }
+          ]
+        }
+      },
+      "packet_state": {
+        "version": "current",
+        "verification": "not_applicable",
+        "reception": "received"
+      },
+      "missing_records": [],
+      "declared_missing_records": []
+    },
+    {
+      "packet": {
+        "header": {
+          "seat_id": "codex-b",
+          "supersedes": null,
+          "round": "R0",
+          "meeting_id": "47445a40-d277-45c5-9349-eb7189de2ce3",
+          "created_at": "2026-11-21T06:55:46.444Z",
+          "kind": "answer",
+          "packet_id": "1c77b537-9634-4c44-9d34-374aab8c6f71",
+          "packet_sha": "ccd436379ddafcfcffa13e67f8c94154cc1b2cc5be345c255bee321d38b8b054"
+        },
+        "body": {
+          "body": "最初に実装するのは、会議画面（LINE風タイムライン）を推奨します。会議の発言や進行をスマホで読み、参加できることが、このアプリの中核的な体験だからです。まず最小限のタイムラインを作れば、情報量、時系列の見やすさ、入力のしやすさを早期に検証できます。初期版は仮の会議データを直接開く形でもよく、一覧や承認はその後に接続できます。\n\n判断が変わるのは、スマホ利用の主目的が参加ではなく承認だと分かっている場合です。その場合は承認画面を優先します。また、ユーザーが多数の会議から対象を探すことが最大の課題で、会議内容自体は既存の仕組みで閲覧できるなら、セッション一覧を優先します。",
+          "claims": [
+            {
+              "statement": "最初に会議画面を実装し、スマホでの会議参加体験を検証する。",
+              "reversal_condition": "スマホ利用の主目的が承認である、または会議の検索・選択が最大の課題で会議内容を既存の仕組みで閲覧できると判明した場合。"
+            }
+          ]
+        }
+      },
+      "packet_state": {
+        "version": "current",
+        "verification": "not_applicable",
+        "reception": "received"
+      },
+      "missing_records": [],
+      "declared_missing_records": []
+    },
+    {
+      "packet": {
+        "header": {
+          "seat_id": "web",
+          "supersedes": null,
+          "round": "R0",
+          "meeting_id": "47445a40-d277-45c5-9349-eb7189de2ce3",
+          "created_at": "2026-11-21T06:55:48.554Z",
+          "kind": "answer",
+          "packet_id": "10e30f62-9bcd-4b98-a073-ec434942cc37",
+          "packet_sha": "3ce65e98bc3037acafc14c61e90760e3776584aad60c50f39070dcdfd1f92c5f"
+        },
+        "body": {
+          "body": "最初に実装すべきは会議画面（LINE風タイムライン）です。理由は、会議の中身が見えることが全ての起点であり、承認も一覧もその上に乗るからです。初版は読み取り専用に絞るべきで、承認操作は認証や重複防止の設計が要るため別段階に分けるのが安全です。セッション一覧は最後でよいと考えます。\n\n判断が変わる条件：スマホから承認できないことが意思決定の主な遅延要因だと実測で分かれば、承認画面を先行します。\n"
+        }
+      },
+      "packet_state": {
+        "version": "current",
+        "verification": "verified",
+        "reception": "received"
+      },
+      "missing_records": [],
+      "declared_missing_records": []
+    },
+    {
+      "packet": {
+        "header": {
+          "round": "R0",
+          "seat_id": "web",
+          "supersedes": null,
+          "meeting_id": "47445a40-d277-45c5-9349-eb7189de2ce3",
+          "created_at": "2026-11-21T06:55:48.854Z",
+          "kind": "attest",
+          "packet_id": "ec9b4a81-bc56-4ede-b76f-166230d67fa9",
+          "packet_sha": "fc4bab37f0738eaaa1fa5113121cd88b454ebd6e00fac1aef1edc40ef13d2b7e"
+        },
+        "body": {
+          "method": "verbatim_confirm",
+          "result": "confirmed"
+        },
+        "target_packet_id": "10e30f62-9bcd-4b98-a073-ec434942cc37"
+      },
+      "packet_state": {
+        "version": "current",
+        "verification": "not_applicable",
+        "reception": "not_applicable"
+      },
+      "missing_records": [],
+      "declared_missing_records": []
+    },
+    {
+      "packet": {
+        "header": {
+          "seat_id": "codex-a",
+          "supersedes": null,
+          "round": "R1",
+          "meeting_id": "47445a40-d277-45c5-9349-eb7189de2ce3",
+          "created_at": "2026-11-21T06:56:15.702Z",
+          "kind": "critique",
+          "packet_id": "28bcbd82-f2c8-4f65-9b86-3ef7ab1c38e5",
+          "packet_sha": "683d5c674f35b4846ae28132d89d32658bb75e4ad0144757ed5f83df7e672471"
+        },
+        "body": {
+          "body": "3回答とも会議画面を優先していますが、スマホ利用の目的や既存の導線を示す根拠は提示されていません。したがって、これは確定した優先順位というより、**会議内容の閲覧が主要な利用目的である場合の暫定案**です。\n\n- **codex-a**は、前提の不確かさと優先順位が変わる条件を明示しており、最も慎重です。ただし「既存の会議を指定して開ける」手段が実際にあるか、なければ最小限の導線を作る必要があるかは未確認です。\n- **codex-b**は、閲覧に加えて参加・入力を中核体験としていますが、その必要性を裏づける情報はありません。入力操作を初版に含めるかどうかで実装範囲が変わるため、閲覧と参加を分けて検証すべきです。また、一覧を優先する条件を「既存の仕組みで会議内容を閲覧できる場合」に限る根拠は示されていません。\n- **web**は、読み取り専用で始める案は実装範囲を絞る選択肢として有用です。一方、「承認も一覧も会議画面の上に乗る」「一覧は最後」とする依存関係には根拠がありません。承認や一覧がスマホ利用の出発点となる可能性もあります。承認の認証や重複防止も必要な検討事項ですが、既存機能の有無を確認せず工数差を断定することはできません。\n\n現時点ではcodex-aの暫定案を採りつつ、まず「スマホで最も頻繁または緊急に行う操作」と「対象の会議・承認に到達する既存の導線」を確認するのが妥当です。その結果、閲覧が中心なら会議画面、承認待ちが主な遅延要因なら承認画面、対象を探すことが障害なら一覧を先にします。\n"
+        }
+      },
+      "packet_state": {
+        "version": "current",
+        "verification": "not_applicable",
+        "reception": "received"
+      },
+      "missing_records": [],
+      "declared_missing_records": []
+    },
+    {
+      "packet": {
+        "header": {
+          "seat_id": "codex-b",
+          "supersedes": null,
+          "round": "R1",
+          "meeting_id": "47445a40-d277-45c5-9349-eb7189de2ce3",
+          "created_at": "2026-11-21T06:56:38.274Z",
+          "kind": "critique",
+          "packet_id": "79945f9e-9643-45da-9df3-7bb847d0e1cd",
+          "packet_sha": "41936606698140c6a14d555882aeb66e83211288916b389998c8ad6fd7034426"
+        },
+        "body": {
+          "body": "3回答とも会議画面を第一候補としていますが、**会議の閲覧・参加がスマホ利用の中心だという前提は、提示された情報からは確認できません**。合意は有力な仮説を示していますが、独立した根拠が増えたわけではありません。\n\n私自身のR0回答も、「参加できることが中核」と断定し、入力の検証まで初期範囲に含めた点が踏み込みすぎでした。仮データのタイムラインは見やすさの検証には役立ちますが、実際の利用価値や更新体験を十分に検証できるとは限りません。また、一覧を優先する条件を「会議内容を既存の仕組みで閲覧できる場合」に限定する必要はありません。対象会議への導線がなければ、閲覧画面と最低限の選択導線を一緒に考える必要があります。\n\ncodex-aの回答は仮定を明示し、一覧を優先する条件も適切に挙げています。一方、「既存の会議を指定して開く」方法が利用者にとって実用的かは未確認です。webの回答は読み取り専用という初期範囲を示した点が具体的ですが、「承認も一覧も会議画面の上に乗る」「一覧は最後」という依存関係は根拠不足です。承認対象や会議への入口として、先に必要になる可能性があります。\n\n現時点では、**会議画面を暫定第一候補**としつつ、初版を閲覧専用にするか入力まで含めるか、会議へどう到達するかを利用目的と既存導線に照らして決めるのが妥当です。承認の遅延や会議の発見が主課題と分かれば、優先順位は変わります。\n"
+        }
+      },
+      "packet_state": {
+        "version": "current",
+        "verification": "not_applicable",
+        "reception": "received"
+      },
+      "missing_records": [],
+      "declared_missing_records": []
+    },
+    {
+      "packet": {
+        "header": {
+          "seat_id": "web",
+          "supersedes": null,
+          "round": "R1",
+          "meeting_id": "47445a40-d277-45c5-9349-eb7189de2ce3",
+          "created_at": "2026-11-21T06:56:40.351Z",
+          "kind": "critique",
+          "packet_id": "130c09f6-b053-482d-bc25-ab753db3dfca",
+          "packet_sha": "aa48508ff1f94b692ed97867fcdd4f50e28dd3f2cc87edc886d93e38f32ddbee"
+        },
+        "body": {
+          "body": "R0 の各回答への批評です。会議画面を最初に実装する点は全席で一致しており、異論はありません。ただしタイムラインは単なる時系列ではなく、ラウンドの区切りと差し替え（supersedes）関係が見える必要があります。承認については、初版では表示のみに留め、操作は次段階に分離する案を支持します。一覧画面を最後にする点も同意です。\n\n判断が変わる条件：複数会議の同時進行が常態化し、直接リンクでは運用に支障が出る場合は一覧を前倒しします。\n"
+        }
+      },
+      "packet_state": {
+        "version": "current",
+        "verification": "verified",
+        "reception": "received"
+      },
+      "missing_records": [],
+      "declared_missing_records": []
+    },
+    {
+      "packet": {
+        "header": {
+          "round": "R1",
+          "seat_id": "web",
+          "supersedes": null,
+          "meeting_id": "47445a40-d277-45c5-9349-eb7189de2ce3",
+          "created_at": "2026-11-21T06:56:40.704Z",
+          "kind": "attest",
+          "packet_id": "2914dac0-dc23-4ce1-8497-31b488b8fabb",
+          "packet_sha": "035dd599f0482af3ba1ae177c22bc9c7e4bed6f486b843f53f3b407ad91c6c68"
+        },
+        "body": {
+          "method": "verbatim_confirm",
+          "result": "confirmed"
+        },
+        "target_packet_id": "130c09f6-b053-482d-bc25-ab753db3dfca"
+      },
+      "packet_state": {
+        "version": "current",
+        "verification": "not_applicable",
+        "reception": "not_applicable"
+      },
+      "missing_records": [],
+      "declared_missing_records": []
+    },
+    {
+      "packet": {
+        "header": {
+          "round": "R1",
+          "seat_id": null,
+          "supersedes": null,
+          "meeting_id": "47445a40-d277-45c5-9349-eb7189de2ce3",
+          "created_at": "2026-11-21T06:56:42.615Z",
+          "kind": "gate_decision",
+          "packet_id": "bd8b3f2f-63b8-4147-b785-8415f0db2126",
+          "packet_sha": "9ef642e4f93e32ac5fab8a8a3a420778f76e72d4e591b64894318ec939dc91bc"
+        },
+        "body": {
+          "result": "pass",
+          "rationale": "",
+          "resolved_points": [
+            "最初に実装する画面は会議画面（LINE風タイムライン）",
+            "初版は読み取り専用とし、承認操作は次段階に分離する",
+            "セッション一覧は最後に実装する"
+          ],
+          "unresolved_points": [],
+          "next_round_scope": []
+        }
+      },
+      "packet_state": {
+        "version": "current",
+        "verification": "not_applicable",
+        "reception": "not_applicable"
+      },
+      "missing_records": [],
+      "declared_missing_records": []
+    },
+    {
+      "packet": {
+        "header": {
+          "round": null,
+          "seat_id": null,
+          "supersedes": null,
+          "meeting_id": "47445a40-d277-45c5-9349-eb7189de2ce3",
+          "created_at": "2026-11-21T06:56:42.854Z",
+          "kind": "synthesis",
+          "packet_id": "04b999a1-09c7-4ca5-ba58-a9fe26b7bc14",
+          "packet_sha": "f88e6e75a43aec13b328faf1cb4c50eacbcacb5dd01b80f92811cf95d77308e0"
+        },
+        "body": {
+          "agreements": [
+            "最初に実装するのは会議画面（LINE風タイムライン）である",
+            "初版の会議画面は読み取り専用に絞り、承認操作は入れない",
+            "セッション一覧は最後に実装する"
+          ],
+          "minority_opinions": [
+            {
+              "opinion": "承認カードは初版では表示専用として採用してよい",
+              "seat_id": "web"
+            }
+          ],
+          "reversal_conditions": [
+            {
+              "claim": "会議画面を最初に実装する",
+              "condition": "スマホから承認できないことが意思決定の主な遅延要因と実測で分かれば、承認画面を先行する",
+              "source_seat": "web"
+            },
+            {
+              "claim": "セッション一覧は最後に実装する",
+              "condition": "複数会議の同時進行が常態化し、直接リンクでは運用に支障が出る場合",
+              "source_seat": "web"
+            }
+          ],
+          "recommendation": "btrfs 実証ランの統合：会議画面（読み取り専用）を最初に実装し、承認操作は次段階、セッション一覧は最後とする。",
+          "cited_materials": [],
+          "unverified_items": [],
+          "declared_missing_records": [],
+          "reception_summary": "R0: 受領3/3・欠席0・免除0\nR1: 受領3/3・欠席0・免除0"
+        }
+      },
+      "packet_state": {
+        "version": "current",
+        "verification": "not_applicable",
+        "reception": "not_applicable"
+      },
+      "missing_records": [],
+      "declared_missing_records": []
+    }
+  ]
+}

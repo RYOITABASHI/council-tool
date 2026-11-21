@@ -1,0 +1,107 @@
+{
+  "meeting_state": "APPROVED",
+  "round_states": [
+    {
+      "round": "R0",
+      "phase": "frozen",
+      "opened_at": "2026-11-21T06:55:04.362Z",
+      "deadline_at": null,
+      "quorum": null
+    },
+    {
+      "round": "R1",
+      "phase": "frozen",
+      "opened_at": "2026-11-21T06:55:49.204Z",
+      "deadline_at": null,
+      "quorum": null
+    }
+  ],
+  "reception_table": [
+    {
+      "seat_id": "codex-a",
+      "round": "R0",
+      "state": "received",
+      "reason": null,
+      "current_packet_id": "a0675193-effd-45ac-9cf8-876259513977",
+      "invalidated_packet_id": null
+    },
+    {
+      "seat_id": "codex-b",
+      "round": "R0",
+      "state": "received",
+      "reason": null,
+      "current_packet_id": "1c77b537-9634-4c44-9d34-374aab8c6f71",
+      "invalidated_packet_id": null
+    },
+    {
+      "seat_id": "web",
+      "round": "R0",
+      "state": "received",
+      "reason": null,
+      "current_packet_id": "10e30f62-9bcd-4b98-a073-ec434942cc37",
+      "invalidated_packet_id": null
+    },
+    {
+      "seat_id": "codex-a",
+      "round": "R1",
+      "state": "received",
+      "reason": null,
+      "current_packet_id": "28bcbd82-f2c8-4f65-9b86-3ef7ab1c38e5",
+      "invalidated_packet_id": null
+    },
+    {
+      "seat_id": "codex-b",
+      "round": "R1",
+      "state": "received",
+      "reason": null,
+      "current_packet_id": "79945f9e-9643-45da-9df3-7bb847d0e1cd",
+      "invalidated_packet_id": null
+    },
+    {
+      "seat_id": "web",
+      "round": "R1",
+      "state": "received",
+      "reason": null,
+      "current_packet_id": "130c09f6-b053-482d-bc25-ab753db3dfca",
+      "invalidated_packet_id": null
+    }
+  ],
+  "timeout_exceeded": false,
+  "reopens": null,
+  "setup_version": 1,
+  "seats": [
+    {
+      "seat_id": "codex-a",
+      "connection": "cli",
+      "quota": 10,
+      "shared_materials": [],
+      "sharing_policy": "share_with_confirmation",
+      "tool_access": "none",
+      "flash": false,
+      "optional": false,
+      "seat_specific_materials": []
+    },
+    {
+      "seat_id": "codex-b",
+      "connection": "cli",
+      "quota": 10,
+      "shared_materials": [],
+      "sharing_policy": "share_with_confirmation",
+      "tool_access": "none",
+      "flash": false,
+      "optional": false,
+      "seat_specific_materials": []
+    },
+    {
+      "seat_id": "web",
+      "connection": "web",
+      "quota": 4,
+      "shared_materials": [],
+      "sharing_policy": "share_with_confirmation",
+      "tool_access": "none",
+      "flash": false,
+      "optional": false,
+      "seat_specific_materials": []
+    }
+  ]
+}
