@@ -1,4 +1,4 @@
-import { useFocusEffect, useIsFocused, useLocalSearchParams } from 'expo-router';
+import { Stack, useFocusEffect, useIsFocused, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Platform, Pressable, RefreshControl,
@@ -16,16 +16,9 @@ import { useTheme } from '../components/styles';
 import { loadFixtureMeeting } from '../fixtures';
 import { buildTimeline, receptionRowsForRound, supersededInfo, topicOf } from '../model';
 import type { TimelineItem } from '../model';
-import { displayStyles, loadSettings, saveSettings } from '../storage';
+import { loadSettings, saveSettings } from '../storage';
 import type { DisplayStyle } from '../storage';
-import type { ApproveDecision, MeetingData, Round, RoundState, RunnerPhase, RunnerState } from '../types';
-
-const runnerLabels: Record<Exclude<RunnerPhase, 'idle'>, string> = {
-  running: '実行中',
-  awaiting_approval: '承認待ち',
-  error: 'エラー',
-  done: '完了',
-};
+import type { ApproveDecision, MeetingData, Round, RoundState, RunnerState } from '../types';
 
 const approvalLabels: Record<ApproveDecision, string> = { approve: '承認する', reject: '却下する' };
 
@@ -115,6 +108,7 @@ function MeetingContent({ data, displayStyle, refreshing, refresh }: {
         const id = item.entry.packet.header.packet_id;
         return (
           <PacketBubble entry={item.entry}
+            splitParagraphs={displayStyle === 'line'}
             isSuperseded={versions.supersededIds.has(id)}
             supersededBy={versions.supersededBy.get(id)}
           />
@@ -163,15 +157,14 @@ function ItemSeparator() {
 }
 
 function RunnerIndicator({ runner }: { runner?: RunnerState }) {
-  const { ui } = useTheme();
-  if (!runner || runner.phase === 'idle') return null;
+  const { colors, ui } = useTheme();
+  if (runner?.phase !== 'running' && runner?.phase !== 'error') return null;
   return (
     <View style={styles.runner} accessibilityLiveRegion="polite">
       <Text style={[
-        ui.chip,
-        runner.phase === 'awaiting_approval' && ui.warning,
-        runner.phase === 'error' && ui.danger,
-      ]}>{runnerLabels[runner.phase]}</Text>
+        ui.muted,
+        runner.phase === 'error' && { color: colors.red },
+      ]}>{runner.phase === 'error' ? 'エラー' : '実行中'}</Text>
       {runner.phase === 'error' && runner.detail !== null && <Text style={ui.muted}>{runner.detail}</Text>}
     </View>
   );
@@ -183,6 +176,7 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
   const [error, setError] = useState<string>();
   const [meeting, setMeeting] = useState<LoadedMeeting>();
   const [displayStyle, setDisplayStyle] = useState<DisplayStyle>('line');
+  const [connectionConfigured, setConnectionConfigured] = useState(false);
   const [settingsReady, setSettingsReady] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
   const [writeBusy, setWriteBusy] = useState(false);
@@ -230,6 +224,7 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
           result = { data: sample };
         } else {
           const { facadeUrl, token, meetingId: savedId } = await loadSettings();
+          if (inFlight.current === request) setConnectionConfigured(!!facadeUrl.trim());
           if (!facadeUrl.trim()) throw new FacadeError('unreachable');
           const id = meetingId ?? savedId;
           if (!id) throw new FacadeError('not_found');
@@ -290,6 +285,7 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
     let current = true;
     void loadSettings().then(settings => {
       if (current) {
+        setConnectionConfigured(!!settings.facadeUrl.trim());
         setDisplayStyle(settings.displayStyle);
         setSettingsReady(true);
       }
@@ -373,53 +369,61 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
     });
   }
 
+  const nextStyle = displayStyle === 'line' ? 'slack' : 'line';
+  const refreshDisabled = loading || writeBusy;
+  const postingReason = fixture ? 'サンプル会議のため投稿できません'
+    : terminal ? 'この会議は終了しています'
+    : !connectionConfigured ? '設定で接続すると投稿できます'
+    : '会議の進行中は投稿できません';
   const update = () => refresh();
   const errorStyle = [ui.body, styles.error, { color: colors.red }];
   const writeFeedback = writeError && <Text accessibilityLiveRegion="polite" style={errorStyle}>{writeError}</Text>;
 
   return (
     <KeyboardAvoidingView style={styles.screen} behavior={!fixture && Platform.OS === 'ios' ? 'padding' : undefined}>
-      <View style={[styles.header, { backgroundColor: colors.header, borderBottomColor: colors.border }]}>
-        {data && (
-          <>
-            <StateBanner state={data.state.meeting_state} canApprove={canApprove} />
-            <Text accessibilityRole="header" style={[ui.title, styles.topic]}
-              numberOfLines={displayStyle === 'line' ? 2 : undefined}>{topicOf(data.packets) || '会議'}</Text>
-            <RunnerIndicator runner={runner} />
-          </>
-        )}
-        {canApprove && (
-          <View style={styles.controls}>
-            <Pressable accessibilityRole="button" disabled={writeBusy} onPress={() => confirmApproval('approve')}
-              style={[ui.button, ui.primary, writeBusy && ui.disabled]}>
-              <Text style={ui.primaryText}>{approvalLabels.approve}</Text>
+      <Stack.Screen options={{
+        title: (data && topicOf(data.packets)) || '会議',
+        headerTitleStyle: { fontSize: 16 },
+        headerRight: () => (
+          <View style={styles.headerActions}>
+            <Pressable accessibilityRole="button"
+              accessibilityLabel={nextStyle === 'line' ? 'ライン風に切り替え' : 'スレッド風に切り替え'}
+              disabled={!settingsReady} accessibilityState={{ disabled: !settingsReady }}
+              onPress={() => chooseStyle(nextStyle)} style={[styles.headerButton, !settingsReady && ui.disabled]}>
+              <Text style={[styles.headerIcon, { color: colors.ink }]}>⇄</Text>
             </Pressable>
-            <Pressable accessibilityRole="button" disabled={writeBusy} onPress={() => confirmApproval('reject')}
-              style={[ui.button, { backgroundColor: colors.redBackground }, writeBusy && ui.disabled]}>
-              <Text style={[ui.label, { color: colors.red }]}>{approvalLabels.reject}</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel="更新"
+              disabled={refreshDisabled} accessibilityState={{ disabled: refreshDisabled }}
+              onPress={update} style={[styles.headerButton, refreshDisabled && ui.disabled]}>
+              <Text style={[styles.headerIcon, { color: colors.ink }]}>↻</Text>
             </Pressable>
           </View>
-        )}
-        {!canMention && writeFeedback}
-        <View style={styles.controls}>
-          <View style={styles.segmented}>
-            {displayStyles.map(({ value, label }) => (
-              <Pressable key={value} accessibilityRole="button"
-                accessibilityState={{ selected: displayStyle === value }}
-                disabled={!settingsReady}
-                onPress={() => chooseStyle(value)}
-                style={[ui.button, styles.segment, displayStyle === value && ui.primary]}
-              >
-                <Text style={[ui.label, displayStyle === value && ui.primaryText]}>{label}</Text>
+        ),
+      }} />
+      {(data || saveFailed) && (
+        <View style={[styles.header, { backgroundColor: colors.header, borderBottomColor: colors.border }]}>
+          {data && (
+            <>
+              <StateBanner state={data.state.meeting_state} canApprove={canApprove} />
+              {(runner?.phase === 'error' || (runner?.phase === 'running' && phase !== 'OPEN')) &&
+                <RunnerIndicator runner={runner} />}
+            </>
+          )}
+          {canApprove && (
+            <View style={styles.controls}>
+              <Pressable accessibilityRole="button" disabled={writeBusy} onPress={() => confirmApproval('approve')}
+                style={[ui.button, ui.primary, writeBusy && ui.disabled]}>
+                <Text style={ui.primaryText}>{approvalLabels.approve}</Text>
               </Pressable>
-            ))}
-          </View>
-          <Pressable accessibilityRole="button" disabled={loading || writeBusy} onPress={update} style={ui.button}>
-            <Text style={ui.label}>更新</Text>
-          </Pressable>
+              <Pressable accessibilityRole="button" disabled={writeBusy} onPress={() => confirmApproval('reject')}
+                style={[ui.button, { backgroundColor: colors.redBackground }, writeBusy && ui.disabled]}>
+                <Text style={[ui.label, { color: colors.red }]}>{approvalLabels.reject}</Text>
+              </Pressable>
+            </View>
+          )}
+          {saveFailed && <Text accessibilityLiveRegion="polite" style={ui.muted}>表示設定を保存できませんでした</Text>}
         </View>
-        {saveFailed && <Text accessibilityLiveRegion="polite" style={ui.muted}>表示設定を保存できませんでした</Text>}
-      </View>
+      )}
       {error && (
         <View style={styles.status}>
           <Text accessibilityLiveRegion="polite" style={errorStyle}>{error}</Text>
@@ -428,13 +432,15 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
           </Pressable>
         </View>
       )}
-      {data ? <MeetingContent data={data} displayStyle={displayStyle} refreshing={loading} refresh={update} />
-        : loading && <ActivityIndicator style={styles.status} color={colors.accent} accessibilityLabel="読み込み中" />}
-      {canMention && (
-        <SafeAreaView edges={['bottom']} style={[styles.composer, {
-          backgroundColor: colors.header, borderTopColor: colors.border,
-        }]}>
-          <View style={styles.composerContent}>
+      <View style={styles.screen}>
+        {data ? <MeetingContent data={data} displayStyle={displayStyle} refreshing={loading} refresh={update} />
+          : loading && <ActivityIndicator style={styles.status} color={colors.accent} accessibilityLabel="読み込み中" />}
+      </View>
+      <SafeAreaView edges={['bottom']} style={[styles.composer, {
+        backgroundColor: colors.header, borderTopColor: colors.border,
+      }]}>
+        <View style={styles.composerContent}>
+          {canMention && (
             <ScrollView horizontal keyboardShouldPersistTaps="handled"
               style={styles.seatScroll} contentContainerStyle={styles.seatRow}>
               {state.seats.map(({ seat_id }) => {
@@ -451,21 +457,29 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
                 );
               })}
             </ScrollView>
-            {seatId === undefined && (
-              <Text style={ui.muted}>宛先のエージェントを選んでください（＠メンション）。宛先なしの投稿はできません</Text>
-            )}
-            {writeFeedback}
-            <View style={styles.messageRow}>
-              <TextInput accessibilityLabel="メンションの内容" style={[ui.input, styles.mentionInput, seatId === undefined && ui.disabled]}
+          )}
+          {canMention && seatId === undefined && (
+            <Text style={ui.muted}>宛先のエージェントを選んでください（＠メンション）。宛先なしの投稿はできません</Text>
+          )}
+          {writeFeedback}
+          <View style={styles.messageRow}>
+            {canMention ? (
+              <TextInput accessibilityLabel="メンションの内容"
+                style={[ui.input, styles.mentionInput, seatId === undefined && ui.disabled]}
                 value={text} onChangeText={setText} editable={seatId !== undefined && !writeBusy} multiline />
-              <Pressable accessibilityRole="button" disabled={!canSend} onPress={sendMention}
-                style={[styles.send, !canSend && ui.disabled]}>
-                <Text style={[ui.label, { color: colors.accentText }]}>送信</Text>
-              </Pressable>
-            </View>
+            ) : (
+              <View style={[ui.input, styles.mentionInput, styles.disabledInput, { backgroundColor: colors.pressed }]}>
+                <Text numberOfLines={1} adjustsFontSizeToFit style={ui.muted}>{postingReason}</Text>
+              </View>
+            )}
+            <Pressable accessibilityRole="button" disabled={!canSend}
+              accessibilityState={{ disabled: !canSend }} onPress={sendMention}
+              style={[styles.send, !canSend && ui.disabled]}>
+              <Text style={[ui.label, { color: canMention ? colors.accentText : colors.muted }]}>送信</Text>
+            </Pressable>
           </View>
-        </SafeAreaView>
-      )}
+        </View>
+      </SafeAreaView>
     </KeyboardAvoidingView>
   );
 }
@@ -480,11 +494,11 @@ const styles = StyleSheet.create({
   header: {
     borderBottomWidth: StyleSheet.hairlineWidth, gap: 6, paddingHorizontal: 12, paddingVertical: 8,
   },
-  topic: { fontSize: 16, lineHeight: 21 },
+  headerActions: { flexDirection: 'row' },
+  headerButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  headerIcon: { fontSize: 22 },
   runner: { alignItems: 'flex-start', gap: 4 },
   controls: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 },
-  segmented: { flex: 1, minWidth: 210, flexDirection: 'row', gap: 4 },
-  segment: { flex: 1 },
   list: { width: '100%', maxWidth: 800, alignSelf: 'center', padding: 10, paddingBottom: 24 },
   agenda: { borderRadius: 16, paddingVertical: 8, gap: 4 },
   agendaLabel: { fontSize: 13, textAlign: 'center', marginVertical: 2 },
@@ -504,5 +518,6 @@ const styles = StyleSheet.create({
   },
   messageRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 4 },
   mentionInput: { flex: 1, minHeight: 44, maxHeight: 100, borderRadius: 24, paddingVertical: 8 },
+  disabledInput: { justifyContent: 'center' },
   send: { minWidth: 48, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
 });

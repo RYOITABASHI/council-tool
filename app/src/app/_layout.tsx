@@ -40,7 +40,7 @@ export default function RootLayout() {
       }}>
         <Stack.Screen name="index" options={{ title: 'セッション', headerRight: SessionButtons }} />
         <Stack.Screen name="compose" options={{ title: '新規セッション' }} />
-        <Stack.Screen name="meeting" options={{ title: '会議', headerRight: SettingsButton }} />
+        <Stack.Screen name="meeting" options={{ title: '会議', headerBackButtonDisplayMode: 'minimal' }} />
         <Stack.Screen name="settings" options={{ title: '設定' }} />
       </Stack>
     </>
