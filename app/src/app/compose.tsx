@@ -5,7 +5,7 @@ import {
   Text, TextInput, View,
 } from 'react-native';
 import { createMeeting, describeFacadeError, startMeeting } from '../api';
-import { colors, ui } from '../components/styles';
+import { useTheme } from '../components/styles';
 import { AGENT_PRESETS, loadSettings } from '../storage';
 import type { Settings } from '../storage';
 import type { SeatKind } from '../types';
@@ -16,6 +16,7 @@ const presets = AGENT_PRESETS.map(preset => ({
 }));
 
 export default function ComposeScreen() {
+  const { colors, ui } = useTheme();
   const [settings, setSettings] = useState<Settings>();
   const [topic, setTopic] = useState('');
   const [selectedAgents, setSelectedAgents] = useState<SeatKind[]>();
@@ -35,7 +36,7 @@ export default function ComposeScreen() {
     };
   }, []));
 
-  if (!settings) return <ActivityIndicator accessibilityLabel="読み込み中" color={colors.teal} style={styles.loading} />;
+  if (!settings) return <ActivityIndicator accessibilityLabel="読み込み中" color={colors.accent} style={styles.loading} />;
 
   const facadeUrl = settings.facadeUrl.trim();
   if (!facadeUrl) {
@@ -100,12 +101,12 @@ export default function ComposeScreen() {
                   <Text style={checked ? ui.primaryText : ui.label}>{label}</Text>
                   <Text style={ui.chip}>{seat_id}</Text>
                 </View>
-                <Text style={[ui.muted, checked && styles.selectedDescription]}>{description}</Text>
+                <Text style={[ui.muted, checked && { color: colors.onAccent }]}>{description}</Text>
               </Pressable>
             );
           })}
         </View>
-        {!!error && <Text accessibilityLiveRegion="polite" style={[ui.body, styles.error]}>{error}</Text>}
+        {!!error && <Text accessibilityLiveRegion="polite" style={[ui.body, { color: colors.red }]}>{error}</Text>}
         {error && createdId !== undefined && (
           <Pressable accessibilityRole="button" style={ui.button} onPress={() =>
             router.push({ pathname: '/meeting', params: { source: 'facade', meetingId: createdId } })}>
@@ -124,10 +125,8 @@ export default function ComposeScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   loading: { padding: 20 },
-  content: { width: '100%', maxWidth: 560, alignSelf: 'center', padding: 16, gap: 16 },
+  content: { width: '100%', maxWidth: 560, alignSelf: 'center', padding: 12, gap: 12 },
   topic: { minHeight: 112, paddingVertical: 10 },
   seat: { alignItems: 'flex-start', gap: 2 },
   seatHeading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
-  selectedDescription: { color: colors.white },
-  error: { color: colors.red },
 });

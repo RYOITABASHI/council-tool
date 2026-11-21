@@ -1,6 +1,6 @@
 import { StyleSheet, Text, View } from 'react-native';
 import type { ReceptionRow, Round, RoundState } from '../types';
-import { colors, ui } from './styles';
+import { useTheme } from './styles';
 
 const labels: Record<ReceptionRow['state'], string> = {
   received: '既読',
@@ -13,35 +13,29 @@ const labels: Record<ReceptionRow['state'], string> = {
 type Props = { round: Round; phase: RoundState['phase']; rows: ReceptionRow[] };
 
 export function RoundHeader({ round, phase, rows }: Props) {
+  const { colors, ui } = useTheme();
+  const reception = rows.map(row => {
+    const reason = row.state === 'absent' && row.reason?.code ? `（${row.reason.code}）` : '';
+    return `${row.seat_id} ${labels[row.state]}${reason}`;
+  }).join(' ・ ');
+
   return (
     <View style={styles.header}>
-      <View style={styles.separator}>
-        <View style={styles.rule} />
-        <Text accessibilityRole="header" style={ui.label}>ラウンド {round}</Text>
-        <Text style={ui.chip}>{phase === 'frozen' ? '凍結' : '進行中'}</Text>
-        <View style={styles.rule} />
+      <View style={[styles.pill, { backgroundColor: colors.system }]}>
+        <Text accessibilityRole="header" style={[ui.muted, styles.label]}>
+          ラウンド {round} ・ {phase === 'frozen' ? '凍結' : '進行中'}
+        </Text>
       </View>
       {rows.length > 0 && (
-        <View style={[ui.wrap, styles.chips]}>
-          {rows.map(row => (
-            <Text key={row.seat_id} style={[
-              ui.chip,
-              (row.state === 'pending' || row.state === 'transcribed_pending_attest') && ui.warning,
-              row.state === 'absent' && ui.danger,
-            ]}>
-              {row.seat_id} · {labels[row.state]}
-              {row.state === 'absent' && row.reason?.code ? `（${row.reason.code}）` : ''}
-            </Text>
-          ))}
-        </View>
+        <Text style={[ui.muted, styles.reception]}>{reception}</Text>
       )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  header: { gap: 8, paddingVertical: 8 },
-  separator: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  rule: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.border },
-  chips: { justifyContent: 'center' },
+  header: { alignItems: 'center', gap: 4, paddingVertical: 6 },
+  pill: { borderRadius: 16, paddingHorizontal: 12, paddingVertical: 3 },
+  label: { fontSize: 12, fontWeight: '600', textAlign: 'center' },
+  reception: { fontSize: 11, lineHeight: 16, textAlign: 'center' },
 });

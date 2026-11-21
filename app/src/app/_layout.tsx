@@ -1,23 +1,25 @@
 import { router, Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { colors } from '../components/styles';
+import { useThemeColors } from '../components/styles';
 
 function SettingsButton() {
+  const colors = useThemeColors();
   return (
     <Pressable accessibilityRole="button" accessibilityLabel="設定"
       onPress={() => router.push('/settings')} style={styles.gear}>
-      <Text style={styles.icon}>⚙</Text>
+      <Text style={[styles.icon, { color: colors.ink }]}>⚙</Text>
     </Pressable>
   );
 }
 
 function SessionButtons() {
+  const colors = useThemeColors();
   return (
     <View style={styles.actions}>
       <Pressable accessibilityRole="button" accessibilityLabel="新規セッション"
         onPress={() => router.push('/compose')} style={styles.gear}>
-        <Text style={styles.icon}>＋</Text>
+        <Text style={[styles.icon, { color: colors.ink }]}>＋</Text>
       </Pressable>
       <SettingsButton />
     </View>
@@ -25,13 +27,15 @@ function SessionButtons() {
 }
 
 export default function RootLayout() {
+  const colors = useThemeColors();
   return (
     <>
-      <StatusBar style="dark" />
+      <StatusBar style="auto" />
       <Stack screenOptions={{
         title: '首脳会議',
         headerTintColor: colors.ink,
-        headerStyle: { backgroundColor: colors.white },
+        headerStyle: { backgroundColor: colors.header },
+        headerShadowVisible: false,
         contentStyle: { backgroundColor: colors.page },
       }}>
         <Stack.Screen name="index" options={{ title: 'セッション', headerRight: SessionButtons }} />
@@ -43,12 +47,8 @@ export default function RootLayout() {
   );
 }
 
-
 const styles = StyleSheet.create({
-  actions: { flexDirection: 'row', gap: 8 },
-  gear: {
-    width: 44, height: 44, borderRadius: 22, borderWidth: 1, borderColor: colors.border,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  icon: { color: colors.ink, fontSize: 22 },
+  actions: { flexDirection: 'row' },
+  gear: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  icon: { fontSize: 22 },
 });

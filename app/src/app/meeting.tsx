@@ -12,7 +12,7 @@ import { PacketBubble } from '../components/PacketBubble';
 import { RoundHeader } from '../components/RoundHeader';
 import { StateBanner } from '../components/StateBanner';
 import { SynthesisCard } from '../components/SynthesisCard';
-import { colors, ui } from '../components/styles';
+import { useTheme } from '../components/styles';
 import { loadFixtureMeeting } from '../fixtures';
 import { buildTimeline, receptionRowsForRound, supersededInfo, topicOf } from '../model';
 import type { TimelineItem } from '../model';
@@ -69,12 +69,14 @@ function itemKey(item: ListItem): string {
 }
 
 function TimeoutNotice() {
+  const { ui } = useTheme();
   return <Text style={[ui.chip, ui.warning, styles.message]}>会議が制限時間を超過しました</Text>;
 }
 
 function MeetingContent({ data, displayStyle, refreshing, refresh }: {
   data: MeetingData; displayStyle: DisplayStyle; refreshing: boolean; refresh: () => void;
 }) {
+  const { colors, ui } = useTheme();
   const { state, packets } = data;
   const { items, synthesis, sections, versions } = useMemo(() => {
     const timeline = buildTimeline(state, packets);
@@ -95,9 +97,11 @@ function MeetingContent({ data, displayStyle, refreshing, refresh }: {
     switch (item.type) {
       case 'agenda':
         return (
-          <View style={ui.card}>
-            {displayStyle === 'line' && <Text accessibilityRole="header" style={ui.title}>アジェンダ</Text>}
-            <Text selectable style={ui.body}>{item.entry.packet.body.topic}</Text>
+          <View style={[ui.card, ui.systemCard, styles.agenda, { backgroundColor: colors.system }]}>
+            {displayStyle === 'line' && (
+              <Text accessibilityRole="header" style={[ui.label, styles.agendaLabel]}>アジェンダ</Text>
+            )}
+            <Text selectable style={[ui.body, styles.agendaTopic]}>{item.entry.packet.body.topic}</Text>
             {item.entry.packet.body.shared_materials.map((material, index) => (
               <Text selectable key={index} style={ui.muted}>{material}</Text>
             ))}
@@ -130,7 +134,10 @@ function MeetingContent({ data, displayStyle, refreshing, refresh }: {
     keyboardShouldPersistTaps: 'handled' as const,
     keyExtractor: itemKey,
     renderItem,
-    refreshControl: <RefreshControl refreshing={refreshing} onRefresh={refresh} />,
+    refreshControl: (
+      <RefreshControl refreshing={refreshing} onRefresh={refresh}
+        colors={[colors.accentText]} tintColor={colors.accentText} progressBackgroundColor={colors.surface} />
+    ),
     ListHeaderComponent: packets.new_packets.length === 0
       ? <Text style={[ui.muted, styles.message]}>まだ発言がありません</Text>
       : undefined,
@@ -145,7 +152,7 @@ function MeetingContent({ data, displayStyle, refreshing, refresh }: {
       stickySectionHeadersEnabled={false}
       renderSectionHeader={({ section }) => section.header
         ? roundHeader(section.header.round, section.header.phase)
-        : section.title ? <Text accessibilityRole="header" style={styles.sectionTitle}>{section.title}</Text>
+        : section.title ? <Text accessibilityRole="header" style={[ui.label, styles.agendaLabel]}>{section.title}</Text>
           : null}
     />
   );
@@ -156,6 +163,7 @@ function ItemSeparator() {
 }
 
 function RunnerIndicator({ runner }: { runner?: RunnerState }) {
+  const { ui } = useTheme();
   if (!runner || runner.phase === 'idle') return null;
   return (
     <View style={styles.runner} accessibilityLiveRegion="polite">
@@ -170,6 +178,7 @@ function RunnerIndicator({ runner }: { runner?: RunnerState }) {
 }
 
 function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: string }) {
+  const { colors, ui } = useTheme();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [meeting, setMeeting] = useState<LoadedMeeting>();
@@ -365,15 +374,17 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
   }
 
   const update = () => refresh();
-  const writeFeedback = writeError && <Text accessibilityLiveRegion="polite" style={[ui.body, styles.error]}>{writeError}</Text>;
+  const errorStyle = [ui.body, styles.error, { color: colors.red }];
+  const writeFeedback = writeError && <Text accessibilityLiveRegion="polite" style={errorStyle}>{writeError}</Text>;
 
   return (
     <KeyboardAvoidingView style={styles.screen} behavior={!fixture && Platform.OS === 'ios' ? 'padding' : undefined}>
-      <View style={styles.header}>
+      <View style={[styles.header, { backgroundColor: colors.header, borderBottomColor: colors.border }]}>
         {data && (
           <>
             <StateBanner state={data.state.meeting_state} canApprove={canApprove} />
-            <Text accessibilityRole="header" style={ui.title}>{topicOf(data.packets) || '会議'}</Text>
+            <Text accessibilityRole="header" style={[ui.title, styles.topic]}
+              numberOfLines={displayStyle === 'line' ? 2 : undefined}>{topicOf(data.packets) || '会議'}</Text>
             <RunnerIndicator runner={runner} />
           </>
         )}
@@ -384,8 +395,8 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
               <Text style={ui.primaryText}>{approvalLabels.approve}</Text>
             </Pressable>
             <Pressable accessibilityRole="button" disabled={writeBusy} onPress={() => confirmApproval('reject')}
-              style={[ui.button, styles.dangerButton, writeBusy && ui.disabled]}>
-              <Text style={[ui.label, styles.error]}>{approvalLabels.reject}</Text>
+              style={[ui.button, { backgroundColor: colors.redBackground }, writeBusy && ui.disabled]}>
+              <Text style={[ui.label, { color: colors.red }]}>{approvalLabels.reject}</Text>
             </Pressable>
           </View>
         )}
@@ -411,16 +422,18 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
       </View>
       {error && (
         <View style={styles.status}>
-          <Text accessibilityLiveRegion="polite" style={[ui.body, styles.error]}>{error}</Text>
+          <Text accessibilityLiveRegion="polite" style={errorStyle}>{error}</Text>
           <Pressable accessibilityRole="button" onPress={update} style={ui.button}>
             <Text style={ui.label}>再試行</Text>
           </Pressable>
         </View>
       )}
       {data ? <MeetingContent data={data} displayStyle={displayStyle} refreshing={loading} refresh={update} />
-        : loading && <ActivityIndicator style={styles.status} color={colors.teal} accessibilityLabel="読み込み中" />}
+        : loading && <ActivityIndicator style={styles.status} color={colors.accent} accessibilityLabel="読み込み中" />}
       {canMention && (
-        <SafeAreaView edges={['bottom']} style={styles.composer}>
+        <SafeAreaView edges={['bottom']} style={[styles.composer, {
+          backgroundColor: colors.header, borderTopColor: colors.border,
+        }]}>
           <View style={styles.composerContent}>
             <ScrollView horizontal keyboardShouldPersistTaps="handled"
               style={styles.seatScroll} contentContainerStyle={styles.seatRow}>
@@ -430,7 +443,7 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
                   <Pressable key={seat_id} accessibilityRole="button" accessibilityLabel={seat_id}
                     accessibilityState={{ selected, disabled: writeBusy }} disabled={writeBusy}
                     onPress={() => setAddressee(seat_id)} style={[ui.button, styles.seat, selected && ui.primary]}>
-                    <View style={styles.avatar} aria-hidden>
+                    <View style={[styles.avatar, { backgroundColor: colors.surface }]} aria-hidden>
                       <Text style={ui.label}>{Array.from(seat_id)[0]?.toUpperCase()}</Text>
                     </View>
                     <Text style={selected ? ui.primaryText : ui.label}>{seat_id}</Text>
@@ -446,8 +459,8 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
               <TextInput accessibilityLabel="メンションの内容" style={[ui.input, styles.mentionInput, seatId === undefined && ui.disabled]}
                 value={text} onChangeText={setText} editable={seatId !== undefined && !writeBusy} multiline />
               <Pressable accessibilityRole="button" disabled={!canSend} onPress={sendMention}
-                style={[ui.button, ui.primary, !canSend && ui.disabled]}>
-                <Text style={ui.primaryText}>送信</Text>
+                style={[styles.send, !canSend && ui.disabled]}>
+                <Text style={[ui.label, { color: colors.accentText }]}>送信</Text>
               </Pressable>
             </View>
           </View>
@@ -465,32 +478,31 @@ export default function MeetingScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   header: {
-    backgroundColor: colors.white, borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border, gap: 10, padding: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth, gap: 6, paddingHorizontal: 12, paddingVertical: 8,
   },
+  topic: { fontSize: 16, lineHeight: 21 },
   runner: { alignItems: 'flex-start', gap: 4 },
   controls: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 },
-  dangerButton: { backgroundColor: colors.redBackground },
   segmented: { flex: 1, minWidth: 210, flexDirection: 'row', gap: 4 },
   segment: { flex: 1 },
-  list: { width: '100%', maxWidth: 800, alignSelf: 'center', padding: 14, paddingBottom: 36 },
-  sectionTitle: { ...ui.title, paddingTop: 8, paddingBottom: 10 },
-  separator: { height: 8 },
+  list: { width: '100%', maxWidth: 800, alignSelf: 'center', padding: 10, paddingBottom: 24 },
+  agenda: { borderRadius: 16, paddingVertical: 8, gap: 4 },
+  agendaLabel: { fontSize: 13, textAlign: 'center', marginVertical: 2 },
+  agendaTopic: { fontSize: 14, lineHeight: 20 },
+  separator: { height: 6 },
   footer: { gap: 8, marginTop: 8 },
   message: { alignSelf: 'center', textAlign: 'center', marginVertical: 8 },
   status: { padding: 14, gap: 8, alignItems: 'center' },
-  error: { color: colors.red, textAlign: 'center' },
-  composer: {
-    backgroundColor: colors.white, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border,
-  },
-  composerContent: { width: '100%', maxWidth: 800, alignSelf: 'center', padding: 12, gap: 8 },
+  error: { textAlign: 'center' },
+  composer: { borderTopWidth: StyleSheet.hairlineWidth },
+  composerContent: { width: '100%', maxWidth: 800, alignSelf: 'center', padding: 10, gap: 6 },
   seatScroll: { flexGrow: 0 },
   seatRow: { gap: 8 },
-  seat: { flexDirection: 'row', gap: 6 },
+  seat: { flexDirection: 'row', gap: 6, borderRadius: 24 },
   avatar: {
     width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: colors.white,
   },
-  messageRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 },
-  mentionInput: { flex: 1, maxHeight: 100, paddingVertical: 8 },
+  messageRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 4 },
+  mentionInput: { flex: 1, minHeight: 44, maxHeight: 100, borderRadius: 24, paddingVertical: 8 },
+  send: { minWidth: 48, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
 });

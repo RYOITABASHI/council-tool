@@ -1,8 +1,9 @@
 import { StyleSheet, Text, View } from 'react-native';
 import type { PacketEntry } from '../types';
-import { colors, ui } from './styles';
+import { useTheme } from './styles';
 
 export function SynthesisCard({ entry }: { entry: PacketEntry<'synthesis'> }) {
+  const { colors, ui } = useTheme();
   const body = entry.packet.body;
   const groups = [
     { label: '合意点', items: body.agreements },
@@ -16,7 +17,7 @@ export function SynthesisCard({ entry }: { entry: PacketEntry<'synthesis'> }) {
   ];
 
   return (
-    <View style={[ui.card, styles.pinned]}>
+    <View style={[ui.card, ui.systemCard, styles.pinned, { backgroundColor: colors.pale, borderColor: colors.accent }]}>
       <Text accessibilityRole="header" style={ui.title}>統合結果</Text>
       {!!body.recommendation && (
         <View>
@@ -41,5 +42,5 @@ export function SynthesisCard({ entry }: { entry: PacketEntry<'synthesis'> }) {
 }
 
 const styles = StyleSheet.create({
-  pinned: { backgroundColor: colors.pale, borderWidth: 1, borderColor: colors.border },
+  pinned: { borderWidth: 1, padding: 14 },
 });

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { PacketEntry, MissingRecord } from '../types';
 import { isPacketKind } from '../types';
-import { colors, formatTime, ui } from './styles';
+import { formatTime, useTheme } from './styles';
 
 type Props = {
   entry: PacketEntry<'answer' | 'critique' | 'flash' | 'note' | 'gate_decision'>;
@@ -22,6 +22,7 @@ function avatarColor(seat: string): string {
 }
 
 export function PacketBubble({ entry, supersededBy, isSuperseded }: Props) {
+  const { colors, ui } = useTheme();
   const [expanded, setExpanded] = useState(false);
   const { packet, packet_state: status, missing_records: missing } = entry;
   const { kind, created_at } = packet.header;
@@ -32,17 +33,12 @@ export function PacketBubble({ entry, supersededBy, isSuperseded }: Props) {
     claim => claim.statement?.trim() || claim.reversal_condition?.trim(),
   );
   const unverified = status.reception === 'transcribed_pending_attest' || status.verification === 'unverified';
+  const received = status.reception === 'received';
+  const time = formatTime(created_at);
 
-  const content = (
+  const bubble = (
     <>
-      <View style={styles.metadata}>
-        <View style={[styles.avatar, { backgroundColor: avatarColor(seat) }]}>
-          <Text style={ui.label}>{Array.from(seat)[0]?.toUpperCase()}</Text>
-        </View>
-        <Text style={styles.seat}>{seat}</Text>
-        <Text style={ui.muted}>{labels[kind]}</Text>
-        <Text style={ui.muted}>{formatTime(created_at)}</Text>
-      </View>
+      <Text style={[ui.muted, styles.kind]}>{labels[kind]}</Text>
       {isSuperseded && (
         <Text style={ui.muted}>
           差し替え済み → 新しい版があります
@@ -53,7 +49,7 @@ export function PacketBubble({ entry, supersededBy, isSuperseded }: Props) {
           <Text selectable style={ui.body}>{text}</Text>
           {isPacketKind(entry, 'flash') && <Text style={ui.muted}>根拠：{entry.packet.body.basis}</Text>}
           {claims?.map((claim, index) => (
-            <View key={index} style={styles.claim}>
+            <View key={index} style={[styles.claim, { borderLeftColor: colors.border }]}>
               {!!claim.statement?.trim() && <Text style={ui.body}>• {claim.statement}</Text>}
               {!!claim.reversal_condition?.trim() &&
                 <Text style={ui.muted}>判断が変わる条件：{claim.reversal_condition}</Text>}
@@ -71,6 +67,27 @@ export function PacketBubble({ entry, supersededBy, isSuperseded }: Props) {
           )}
         </>
       )}
+      {isSuperseded && expanded && supersededBy && <Text style={ui.muted}>新しい版のID：{supersededBy}</Text>}
+    </>
+  );
+
+  const content = (
+    <>
+      <View style={[styles.avatar, { backgroundColor: avatarColor(seat) }]} aria-hidden>
+        <Text style={[ui.label, { color: colors.avatarInk }]}>{Array.from(seat)[0]?.toUpperCase()}</Text>
+      </View>
+      <View style={styles.column}>
+        <Text style={[ui.muted, styles.seat]}>{seat}</Text>
+        <View style={styles.bubbleLine}>
+          <View style={[ui.card, styles.bubble]}>{bubble}</View>
+          {(received || !!time) && (
+            <View style={styles.receipt}>
+              {received && <Text style={[ui.muted, styles.timestamp]}>既読</Text>}
+              {!!time && <Text style={[ui.muted, styles.timestamp]}>{time}</Text>}
+            </View>
+          )}
+        </View>
+      </View>
     </>
   );
 
@@ -80,18 +97,23 @@ export function PacketBubble({ entry, supersededBy, isSuperseded }: Props) {
       accessibilityState={{ expanded }}
       accessibilityHint={expanded ? '旧版を閉じます' : '旧版の本文を開きます'}
       onPress={() => setExpanded(value => !value)}
-      style={[ui.card, styles.superseded]}
+      style={[styles.row, styles.superseded]}
     >
       {content}
-      {expanded && supersededBy && <Text style={ui.muted}>新しい版のID：{supersededBy}</Text>}
     </Pressable>
-  ) : <View style={ui.card}>{content}</View>;
+  ) : <View style={styles.row}>{content}</View>;
 }
 
 const styles = StyleSheet.create({
-  metadata: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 },
-  avatar: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
-  seat: { flexGrow: 1, flexShrink: 1, color: colors.ink, fontWeight: '700' },
-  claim: { borderLeftWidth: 2, borderLeftColor: colors.border, paddingLeft: 10 },
+  row: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+  avatar: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  column: { flex: 1, minWidth: 0, gap: 2 },
+  seat: { fontSize: 12, lineHeight: 16, paddingLeft: 2 },
+  bubbleLine: { flexDirection: 'row', alignItems: 'flex-end', gap: 5 },
+  bubble: { maxWidth: '88%', flexShrink: 1, borderRadius: 16, borderTopLeftRadius: 3, padding: 10, gap: 4 },
+  kind: { fontSize: 11, lineHeight: 14 },
+  receipt: { alignItems: 'flex-start', flexShrink: 0 },
+  timestamp: { fontSize: 11, lineHeight: 14, fontVariant: ['tabular-nums'] },
+  claim: { borderLeftWidth: 2, paddingLeft: 8 },
   superseded: { opacity: 0.68 },
 });

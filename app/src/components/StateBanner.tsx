@@ -1,6 +1,6 @@
-import { Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import type { MeetingState } from '../types';
-import { ui } from './styles';
+import { useTheme } from './styles';
 
 const labels: Record<MeetingState, string> = {
   CREATED: '作成済み',
@@ -14,9 +14,10 @@ const labels: Record<MeetingState, string> = {
 };
 
 export function StateBanner({ state, canApprove = false }: { state: MeetingState; canApprove?: boolean }) {
+  const { ui } = useTheme();
   const awaiting = state === 'AWAITING_APPROVAL';
   return (
-    <View style={ui.wrap}>
+    <View style={[ui.wrap, styles.banner]}>
       <Text style={[
         ui.chip,
         (awaiting || state === 'GATE' || state === 'BARRIER') && ui.warning,
@@ -26,3 +27,7 @@ export function StateBanner({ state, canApprove = false }: { state: MeetingState
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  banner: { alignItems: 'center' },
+});
