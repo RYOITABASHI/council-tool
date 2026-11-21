@@ -1,8 +1,9 @@
 import { StyleSheet, Text, View } from 'react-native';
 import type { PacketEntry } from '../types';
-import { colors, ui } from './styles';
+import { useTheme } from './styles';
 
 export function GateCard({ entry }: { entry: PacketEntry<'gate_decision'> }) {
+  const { colors, ui } = useTheme();
   const { result, rationale, resolved_points, unresolved_points, next_round_scope } = entry.packet.body;
   const groups = [
     { label: '解消点', items: resolved_points },
@@ -11,7 +12,7 @@ export function GateCard({ entry }: { entry: PacketEntry<'gate_decision'> }) {
   ];
 
   return (
-    <View style={[ui.card, styles.gate]}>
+    <View style={[ui.card, ui.systemCard, styles.gate, { borderLeftColor: colors.accent }]}>
       <Text accessibilityRole="header" style={ui.title}>
         議長ゲート：{result === 'pass' ? '通過' : '差し戻し'}
       </Text>
@@ -27,5 +28,5 @@ export function GateCard({ entry }: { entry: PacketEntry<'gate_decision'> }) {
 }
 
 const styles = StyleSheet.create({
-  gate: { borderLeftWidth: 4, borderLeftColor: colors.teal },
+  gate: { borderLeftWidth: 3 },
 });

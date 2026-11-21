@@ -4,13 +4,14 @@ import {
   ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet,
   Text, TextInput, View,
 } from 'react-native';
-import { colors, ui } from '../components/styles';
+import { useTheme } from '../components/styles';
 import { AGENT_PRESETS, displayStyles, loadSettings, saveSettings } from '../storage';
 import type { Settings } from '../storage';
 
 const saveError = '設定を保存できませんでした。もう一度お試しください';
 
 export default function SettingsScreen() {
+  const { colors, ui } = useTheme();
   const [settings, setSettings] = useState<Settings>();
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState('');
@@ -25,7 +26,7 @@ export default function SettingsScreen() {
     };
   }, []);
 
-  if (!settings) return <ActivityIndicator accessibilityLabel="読み込み中" color={colors.teal} style={styles.loading} />;
+  if (!settings) return <ActivityIndicator accessibilityLabel="読み込み中" color={colors.accent} style={styles.loading} />;
 
   function edit(patch: Partial<Settings>) {
     setSettings(previous => previous && { ...previous, ...patch });
@@ -69,12 +70,12 @@ export default function SettingsScreen() {
         <View style={ui.card}>
           <Text accessibilityRole="header" style={ui.title}>接続</Text>
           <Text style={ui.label}>ファサードURL</Text>
-          <TextInput accessibilityLabel="ファサードURL" style={styles.input}
+          <TextInput accessibilityLabel="ファサードURL" style={ui.input}
             value={settings.facadeUrl} onChangeText={facadeUrl => edit({ facadeUrl })}
             editable={!busy} placeholder="https://host:port" placeholderTextColor={colors.muted}
             keyboardType="url" autoCapitalize="none" autoCorrect={false} />
           <Text style={ui.label}>トークン</Text>
-          <TextInput accessibilityLabel="トークン" style={styles.input}
+          <TextInput accessibilityLabel="トークン" style={ui.input}
             value={settings.token} onChangeText={token => edit({ token })}
             editable={!busy} secureTextEntry autoCapitalize="none" autoCorrect={false} />
           <Pressable accessibilityRole="button" disabled={busy} style={ui.button}
@@ -96,7 +97,7 @@ export default function SettingsScreen() {
                     ? settings.selectedAgents.filter(selected => selected !== id)
                     : [...settings.selectedAgents, id],
                 })}>
-                <View style={[styles.check, checked && ui.primary]} aria-hidden>
+                <View style={[styles.check, { borderColor: colors.accent }, checked && ui.primary]} aria-hidden>
                   {checked && <Text style={ui.primaryText}>✓</Text>}
                 </View>
                 <View style={styles.agentDetails}>
@@ -127,11 +128,11 @@ export default function SettingsScreen() {
 
         <View style={ui.card}>
           <Text accessibilityRole="header" style={ui.title}>会議IDで開く</Text>
-          <TextInput accessibilityLabel="会議ID" style={styles.input}
+          <TextInput accessibilityLabel="会議ID" style={ui.input}
             value={settings.meetingId} onChangeText={value => edit({ meetingId: value })}
             editable={!busy} autoCapitalize="none" autoCorrect={false} />
           <Pressable accessibilityRole="button" disabled={busy || !meetingId}
-            style={[ui.button, ui.primary, (busy || !meetingId) && styles.disabled]}
+            style={[ui.button, ui.primary, (busy || !meetingId) && ui.disabled]}
             onPress={() => void saveConnection(true)}>
             <Text style={ui.primaryText}>開く</Text>
           </Pressable>
@@ -144,18 +145,13 @@ export default function SettingsScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   loading: { padding: 20 },
-  content: { width: '100%', maxWidth: 560, alignSelf: 'center', padding: 16, gap: 16 },
-  input: {
-    minHeight: 48, borderWidth: 1, borderColor: colors.border, borderRadius: 8, paddingHorizontal: 12,
-    fontSize: 16, color: colors.ink,
-  },
-  agent: { flexDirection: 'row', gap: 12, alignItems: 'center', paddingVertical: 8, minHeight: 48 },
+  content: { width: '100%', maxWidth: 560, alignSelf: 'center', padding: 12, gap: 12 },
+  agent: { flexDirection: 'row', gap: 10, alignItems: 'center', paddingVertical: 6, minHeight: 44 },
   agentDetails: { flex: 1 },
   check: {
-    width: 24, height: 24, borderRadius: 12, borderWidth: 1, borderColor: colors.teal,
+    width: 24, height: 24, borderRadius: 12, borderWidth: 1,
     alignItems: 'center', justifyContent: 'center',
   },
   segmented: { flexDirection: 'row', gap: 4 },
   segment: { flex: 1 },
-  disabled: { opacity: 0.55 },
 });

@@ -1,8 +1,9 @@
 import { StyleSheet, Text } from 'react-native';
 import type { PacketEntry } from '../types';
-import { formatTime, ui } from './styles';
+import { formatTime, useTheme } from './styles';
 
 export function AttestRow({ entry }: { entry: PacketEntry<'attest'> }) {
+  const { ui } = useTheme();
   const { header, body } = entry.packet;
   const result = body.result === 'confirmed' ? '確認済み' : '不一致';
   return (
@@ -13,5 +14,5 @@ export function AttestRow({ entry }: { entry: PacketEntry<'attest'> }) {
 }
 
 const styles = StyleSheet.create({
-  center: { textAlign: 'center', paddingVertical: 5 },
+  center: { textAlign: 'center', paddingVertical: 4, fontSize: 12 },
 });
