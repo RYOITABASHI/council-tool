@@ -1,7 +1,7 @@
 import { fork, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createHash, randomUUID } from 'node:crypto';
-import { cpSync, existsSync, linkSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, linkSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -68,7 +68,7 @@ beforeEach(() => {
         } else if (pauseAt === 'written' && path.endsWith('/manifest.json')) {
           pause();
         } else if (/\\.checkpoint\\.\\d+\\.json\\..+\\.tmp$/.test(path)) {
-          if (pauseAt === 'publishing-checkpoint') pause();
+          if (pauseAt === 'publishing-checkpoint' || pauseAt === 'pending-revision-before-proof') pause();
           if (pauseAt === 'finalize') pauseAt = 'finalizing-checkpoint';
         }
       };
@@ -85,6 +85,10 @@ beforeEach(() => {
       };
       fs.linkSync = (from, to) => {
         linkSync(from, to);
+        if (pauseAt?.startsWith('pending-revision-') && to.endsWith('.json.pending')) {
+          // Use a timestamp the test can restore exactly with Node's utimesSync.
+          fs.utimesSync(to, 1000, 1000);
+        }
         if (pauseAt === 'target-linked' && to.includes('/.manifest-target.')) pause();
         if (pauseAt === 'undo-linked' && to.includes('/.manifest-undo.')) pause();
         if (/\\.commit-proof\\.\\d+\\.json$/.test(to)) {
@@ -93,7 +97,7 @@ beforeEach(() => {
         }
         if (pauseAt === 'commit-record' && /\\.commit\\.\\d+\\.json$/.test(to)) pause();
         if (/\\.checkpoint\\.\\d+\\.json$/.test(to)) {
-          if (pauseAt === 'checkpoint') pause();
+          if (pauseAt === 'checkpoint' || pauseAt === 'pending-revision-after-proof') pause();
           if (pauseAt === 'checkpoint-synced') pauseAt = 'next-directory-sync';
           if (pauseAt === 'fail-checkpoint-sync') pauseAt = 'fail-directory-sync';
         }
@@ -252,6 +256,58 @@ async function expectStartupPaused({ child, ready }: ReturnType<typeof peer>) {
   ]);
   expect(stopped).toBe('paused');
 }
+
+function editWithRestoredMtime(path: string, original: string, edited: string) {
+  expect(edited).not.toBe(original);
+  expect(Buffer.byteLength(edited)).toBe(Buffer.byteLength(original));
+  const before = statSync(path, { bigint: true });
+  writeFileSync(path, edited);
+  utimesSync(path, 1000, 1000);
+  const after = statSync(path, { bigint: true });
+  expect(after).toMatchObject({ ino: before.ino, size: before.size, mtimeNs: before.mtimeNs });
+}
+
+it.each([
+  { pauseAt: 'pending-revision-before-proof', tamper: true, description: 'rejects a pending edit before committing the checkpoint' },
+  { pauseAt: 'pending-revision-after-proof', tamper: true, description: 'rejects a pending edit before linking the revision' },
+  { pauseAt: 'checkpoint', tamper: false, description: 'publishes an untouched pending revision' },
+])('$description', async ({ pauseAt, tamper }) => {
+  const owner = peer('a');
+  expect(await owner.ready).toEqual({ ok: true });
+  const before = manifest();
+  const resume = await pauseCreation(owner.child, pauseAt);
+  const meetings = readdirSync(home, { withFileTypes: true }).filter(entry => entry.isDirectory());
+  expect(meetings).toHaveLength(1);
+  const directory = join(home, meetings[0].name);
+  const pendingNames = readdirSync(directory).filter(name => name.endsWith('.json.pending'));
+  expect(pendingNames).toHaveLength(1);
+  const pending = join(directory, pendingNames[0]);
+  const published = pending.slice(0, -'.pending'.length);
+  const original = readFileSync(pending, 'utf8');
+  expect(existsSync(published)).toBe(false);
+
+  if (tamper) {
+    const edited = original.replace('"topic":"a"', '"topic":"b"');
+    editWithRestoredMtime(pending, original, edited);
+    expect(await resume()).toEqual({ ok: false, message: expect.stringMatching(/meeting revision contents changed/i) });
+    expect(existsSync(published)).toBe(false);
+    if (pauseAt === 'pending-revision-before-proof') {
+      expect(manifest()).toBe(before);
+      const generation = JSON.parse(before).generation + 1;
+      expect(existsSync(join(home, `.commit-proof.${generation}.json`))).toBe(false);
+    } else {
+      expect(await peer('a').ready).toEqual({ ok: false, message: expect.stringMatching(/ENOENT.*\.json\.pending/) });
+      expect(existsSync(published)).toBe(false);
+      const [rejected] = readdirSync(directory).filter(name => name.startsWith(pendingNames[0] + '.'));
+      expect(rejected).toBeDefined();
+      expect(readFileSync(join(directory, rejected), 'utf8')).toBe(edited);
+    }
+  } else {
+    expect(await resume()).toEqual({ ok: true });
+    expect(readFileSync(published, 'utf8')).toBe(original);
+    expect(existsSync(pending)).toBe(false);
+  }
+});
 
 it('rejects a different epoch with a fast wall clock while a peer is alive', async () => {
   expect(await peer('a', { count: 1 }).ready).toEqual({ ok: true });

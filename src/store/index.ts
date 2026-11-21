@@ -15,7 +15,7 @@ import type { Round } from '../core/types.js';
 import { mergeSetup, record, validate } from '../core/validation.js';
 import { inputPacketAllowed } from '../core/views.js';
 import { bodySha } from '../packet/index.js';
-import { descriptorPath, identityAt, ManifestFile, openRegular, revisionGeneration, sameIdentity, stageFile, StoreFiles } from './files.js';
+import { descriptorPath, identityAt, ManifestFile, openRegular, revisionGeneration, sameEntry, sameIdentity, stageFile, StoreFiles } from './files.js';
 import { legacyPositionsFit } from './legacy-positions.js';
 import type { LegacyPositionCursor, LegacyPositionHistory, LegacyPositionStep } from './legacy-positions.js';
 import type { DurableSnapshot, FileIdentity, PresenceBinding } from './files.js';
@@ -1011,7 +1011,8 @@ function initializePresenceToken(path: string, anchorPath: string): void {
   const staged = stageFile(path + '-token', randomUUID());
   try {
     const current = identityAt(path);
-    if (!sameIdentity(prior, current) || current?.ctimeNs !== prior?.ctimeNs || identityAt(anchorPath)) {
+    const unchanged = prior ? sameEntry(prior, current) && current?.nlink === prior.nlink : current === undefined;
+    if (!unchanged || identityAt(anchorPath)) {
       presenceChanged();
     }
     renameSync(staged.path, path);
@@ -1698,6 +1699,7 @@ export class FileStore implements Store {
         files.publishCheckpoint(manifest.generation, bytes, () => {
           check();
           files.checkRevisionGeneration(transaction.generation);
+          files.checkStagedContents();
         }, linked);
         this.publishRevisions(manifest, files);
       }, (durable, committed) => {
