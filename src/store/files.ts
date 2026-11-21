@@ -63,12 +63,17 @@ export function stageFile(path: string, bytes: string) {
 }
 
 type EntryIdentity = NonNullable<ReturnType<typeof identityAt>>;
-type Dependency = { identity: EntryIdentity; label: string };
+type Dependency = { identity: EntryIdentity; label: string; digest?: string | undefined };
 type StoreDirectory = { fd: number; path: string; relative: string };
 
-function sameEntry(expected: EntryIdentity, actual: EntryIdentity | undefined): boolean {
+function contentDigest(bytes: Buffer | string): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+export function sameEntry(expected: EntryIdentity, actual: EntryIdentity | undefined): boolean {
+  // btrfs can advance ctime after a write even when the file is untouched between stats.
   return actual !== undefined && sameIdentity(expected, actual) && expected.birthtimeNs === actual.birthtimeNs &&
-    (expected.isDirectory() || expected.ctimeNs === actual.ctimeNs);
+    (expected.isDirectory() || (expected.mtimeNs === actual.mtimeNs && expected.size === actual.size));
 }
 
 const revisionPattern = /^(?:([1-9]\d*)-)?[0-9a-f-]{36}\.json$/;
@@ -106,25 +111,30 @@ export class StoreFiles {
     }
   }
 
-  private track(relative: string, identity: EntryIdentity, label: string): void {
+  private track(relative: string, identity: EntryIdentity, label: string, digest?: string): void {
     const previous = this.dependencies.get(relative);
     if (previous) {
       this.checkEntry(previous, identity);
-    } else {
-      this.dependencies.set(relative, { identity, label });
+      if (digest === undefined) return;
+      if (previous.digest !== undefined && previous.digest !== digest) {
+        throw new Error('Council store ' + label + ' contents changed during transaction');
+      }
     }
+    this.dependencies.set(relative, { identity, label, digest });
   }
 
   read<T>(parent: StoreDirectory, name: string, label: string): T {
     return JSON.parse(this.readBytes(parent, name, label)) as T;
   }
 
-  private readBytes(parent: StoreDirectory, name: string, label: string): string {
+  private readBytes(parent: StoreDirectory, name: string, label: string, trackContents = false): string {
     const relative = join(parent.relative, entryName(name));
     const fd = openRegular(join(parent.path, name));
     try {
-      this.track(relative, fstatSync(fd, { bigint: true }), label);
-      return readFileSync(fd, 'utf8');
+      const identity = fstatSync(fd, { bigint: true });
+      const bytes = readFileSync(fd);
+      this.track(relative, identity, label, trackContents ? contentDigest(bytes) : undefined);
+      return bytes.toString('utf8');
     } finally {
       closeSync(fd);
     }
@@ -137,7 +147,7 @@ export class StoreFiles {
     const existing = reuse ? identityAt(path) : undefined;
     if (existing) {
       this.track(relative, existing, label);
-      if (JSON.stringify(this.read(parent, name, label)) !== bytes) {
+      if (JSON.stringify(JSON.parse(this.readBytes(parent, name, label, true))) !== bytes) {
         throw new Error('Council store ' + label + ' contents changed');
       }
       return;
@@ -153,12 +163,32 @@ export class StoreFiles {
     if (!actual || !sameIdentity(staged.identity, actual) || staged.identity.birthtimeNs !== actual.birthtimeNs) {
       throw new Error('Council store ' + label + ' identity changed during transaction');
     }
-    this.track(relative, actual, label);
+    this.track(relative, actual, label, contentDigest(bytes));
   }
 
   private checkEntry({ identity, label }: Dependency, actual: EntryIdentity | undefined): void {
     if (!sameEntry(identity, actual)) {
       throw new Error('Council store ' + label + ' identity changed during transaction');
+    }
+  }
+
+  private contentsMatch(path: string, dependency: Dependency): boolean {
+    const fd = openRegular(path);
+    try {
+      this.checkEntry(dependency, fstatSync(fd, { bigint: true }));
+      const digest = contentDigest(readFileSync(fd));
+      this.checkEntry(dependency, identityAt(path));
+      return digest === dependency.digest;
+    } finally {
+      closeSync(fd);
+    }
+  }
+
+  checkStagedContents(): void {
+    for (const [relative, dependency] of this.dependencies) {
+      if (dependency.digest !== undefined && !this.contentsMatch(join(this.root.path, relative), dependency)) {
+        throw new Error('Council store ' + dependency.label + ' contents changed during publication');
+      }
     }
   }
 
@@ -191,7 +221,7 @@ export class StoreFiles {
 
   readRevision<T>(dir: StoreDirectory, name: string, allowPending: boolean): T {
     const pending = allowPending && !identityAt(join(dir.path, name));
-    return this.read<T>(dir, pending ? name + '.pending' : name, 'meeting revision');
+    return JSON.parse(this.readBytes(dir, pending ? name + '.pending' : name, 'meeting revision', allowPending)) as T;
   }
 
   publishRevision(dir: StoreDirectory, name: string): void {
@@ -204,10 +234,20 @@ export class StoreFiles {
     const relative = join(dir.relative, name);
     const pendingRelative = join(dir.relative, pendingName);
     const dependency = this.dependencies.get(existing ? relative : pendingRelative);
-    if (!dependency || (existing && !sameIdentity(existing, identity))) {
+    if (dependency?.digest === undefined || (existing && !sameIdentity(existing, identity))) {
       throw new Error('Council store meeting revision changed during publication');
     }
     this.checkEntry(dependency, identity);
+    if (!this.contentsMatch(pending, dependency)) {
+      if (!existing && !identityAt(path)) {
+        // The checkpoint can already be durable. Keep the rejected bytes
+        // outside the active pending name so recovery cannot publish them.
+        this.checkEntry(dependency, identityAt(pending));
+        renameSync(pending, pending + '.' + randomUUID() + '.invalid');
+        fsyncSync(dir.fd);
+      }
+      throw new Error('Council store meeting revision contents changed during publication');
+    }
     if (!existing) linkSync(pending, path);
     // The final name proves this revision's generation was committed.
     // Keep the recoverable pending name until the link is durable.
