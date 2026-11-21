@@ -1,4 +1,4 @@
-import { Stack, useFocusEffect, useIsFocused, useLocalSearchParams } from 'expo-router';
+import { router, Stack, useFocusEffect, useIsFocused, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Platform, Pressable, RefreshControl,
@@ -66,8 +66,9 @@ function TimeoutNotice() {
   return <Text style={[ui.chip, ui.warning, styles.message]}>会議が制限時間を超過しました</Text>;
 }
 
-function MeetingContent({ data, displayStyle, refreshing, refresh }: {
+function MeetingContent({ data, displayStyle, refreshing, refresh, openPacket }: {
   data: MeetingData; displayStyle: DisplayStyle; refreshing: boolean; refresh: () => void;
+  openPacket: (packetId: string) => void;
 }) {
   const { colors, ui } = useTheme();
   const { state, packets } = data;
@@ -108,9 +109,8 @@ function MeetingContent({ data, displayStyle, refreshing, refresh }: {
         const id = item.entry.packet.header.packet_id;
         return (
           <PacketBubble entry={item.entry}
-            splitParagraphs={displayStyle === 'line'}
             isSuperseded={versions.supersededIds.has(id)}
-            supersededBy={versions.supersededBy.get(id)}
+            onPress={() => openPacket(id)}
           />
         );
       }
@@ -120,7 +120,7 @@ function MeetingContent({ data, displayStyle, refreshing, refresh }: {
   const footer = (
     <View style={styles.footer}>
       {displayStyle === 'slack' && state.timeout_exceeded && <TimeoutNotice />}
-      {synthesis && <SynthesisCard entry={synthesis.entry} />}
+      {synthesis && <SynthesisCard entry={synthesis.entry} onPress={() => openPacket(synthesis.entry.packet.header.packet_id)} />}
     </View>
   );
   const listProps = {
@@ -376,6 +376,11 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
     : !connectionConfigured ? '設定で接続すると投稿できます'
     : '会議の進行中は投稿できません';
   const update = () => refresh();
+  function openPacket(packetId: string) {
+    const id = connection?.id ?? meetingId;
+    if (!id) return;
+    router.push({ pathname: '/packet', params: { meetingId: id, packetId, source: fixture ? 'fixture' : 'facade' } });
+  }
   const errorStyle = [ui.body, styles.error, { color: colors.red }];
   const writeFeedback = writeError && <Text accessibilityLiveRegion="polite" style={errorStyle}>{writeError}</Text>;
 
@@ -433,7 +438,8 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
         </View>
       )}
       <View style={styles.screen}>
-        {data ? <MeetingContent data={data} displayStyle={displayStyle} refreshing={loading} refresh={update} />
+        {data ? <MeetingContent data={data} displayStyle={displayStyle} refreshing={loading} refresh={update}
+          openPacket={openPacket} />
           : loading && <ActivityIndicator style={styles.status} color={colors.accent} accessibilityLabel="読み込み中" />}
       </View>
       <SafeAreaView edges={['bottom']} style={[styles.composer, {

@@ -2,7 +2,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import type { ReceptionRow, Round, RoundState } from '../types';
 import { useTheme } from './styles';
 
-const labels: Record<ReceptionRow['state'], string> = {
+export const receptionLabels: Record<ReceptionRow['state'], string> = {
   received: '既読',
   pending: '保留',
   absent: '欠席',
@@ -16,7 +16,7 @@ export function RoundHeader({ round, phase, rows }: Props) {
   const { colors, ui } = useTheme();
   const reception = rows.map(row => {
     const reason = row.state === 'absent' && row.reason?.code ? `（${row.reason.code}）` : '';
-    return `${row.seat_id} ${labels[row.state]}${reason}`;
+    return `${row.seat_id} ${receptionLabels[row.state]}${reason}`;
   }).join(' ・ ');
 
   return (
