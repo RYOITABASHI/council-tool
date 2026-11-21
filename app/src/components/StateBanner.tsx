@@ -13,7 +13,7 @@ const labels: Record<MeetingState, string> = {
   REJECTED: '却下',
 };
 
-export function StateBanner({ state }: { state: MeetingState }) {
+export function StateBanner({ state, canApprove = false }: { state: MeetingState; canApprove?: boolean }) {
   const awaiting = state === 'AWAITING_APPROVAL';
   return (
     <View style={ui.wrap}>
@@ -22,7 +22,7 @@ export function StateBanner({ state }: { state: MeetingState }) {
         (awaiting || state === 'GATE' || state === 'BARRIER') && ui.warning,
         state === 'REJECTED' && ui.danger,
       ]}>{labels[state]}</Text>
-      {awaiting && <Text style={ui.muted}>承認待ち（この画面からは承認できません）</Text>}
+      {awaiting && !canApprove && <Text style={ui.muted}>承認待ち（この画面からは承認できません）</Text>}
     </View>
   );
 }

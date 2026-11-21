@@ -1,6 +1,32 @@
-export type Round = 'R0' | 'R1' | 'R2';
+export type Round = `R${number}`;
 export type MeetingState = 'CREATED' | 'OPEN' | 'BARRIER' | 'GATE' | 'SYNTHESIZING' |
   'AWAITING_APPROVAL' | 'APPROVED' | 'REJECTED';
+
+export type SeatKind = 'codex-cli' | 'claude-code-cli' | 'api' | 'local';
+
+export interface CreateMeetingRequest {
+  topic: string;
+  seats: { seat_id: string; kind: SeatKind }[];
+}
+
+export interface CreateMeetingResponse {
+  meeting_id: string;
+}
+
+export type RunnerPhase = 'idle' | 'running' | 'awaiting_approval' | 'error' | 'done';
+
+export interface RunnerState {
+  phase: RunnerPhase;
+  detail: string | null;
+  updated_at: string;
+}
+
+export interface MentionRequest {
+  seat_id: string;
+  text: string;
+}
+
+export type ApproveDecision = 'approve' | 'reject';
 
 export interface MeetingSummary {
   meeting_id: string;

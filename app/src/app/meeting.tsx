@@ -1,8 +1,11 @@
-import { useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useFocusEffect, useIsFocused, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, RefreshControl, SectionList, StyleSheet, Text, View } from 'react-native';
-import { FacadeError, facadeErrorMessages, fetchMeeting } from '../api';
-import type { FacadeErrorKind } from '../api';
+import {
+  ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Platform, Pressable, RefreshControl,
+  ScrollView, SectionList, StyleSheet, Text, TextInput, View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { describeFacadeError, FacadeError, fetchMeeting, fetchRunner, postApprove, postMention } from '../api';
 import { AttestRow } from '../components/AttestRow';
 import { GateCard } from '../components/GateCard';
 import { PacketBubble } from '../components/PacketBubble';
@@ -15,13 +18,20 @@ import { buildTimeline, receptionRowsForRound, supersededInfo, topicOf } from '.
 import type { TimelineItem } from '../model';
 import { displayStyles, loadSettings, saveSettings } from '../storage';
 import type { DisplayStyle } from '../storage';
-import type { MeetingData, Round, RoundState } from '../types';
+import type { ApproveDecision, MeetingData, Round, RoundState, RunnerPhase, RunnerState } from '../types';
 
-type LoadError = FacadeErrorKind | 'fixture';
-const errorMessages: Record<LoadError, string> = {
-  ...facadeErrorMessages,
-  fixture: 'サンプル会議の読み込みに失敗しました',
+const runnerLabels: Record<Exclude<RunnerPhase, 'idle'>, string> = {
+  running: '実行中',
+  awaiting_approval: '承認待ち',
+  error: 'エラー',
+  done: '完了',
 };
+
+const approvalLabels: Record<ApproveDecision, string> = { approve: '承認する', reject: '却下する' };
+
+type Connection = { facadeUrl: string; token: string; id: string };
+type LoadedMeeting = { data: MeetingData; runner?: RunnerState; connection?: Connection };
+type RefreshRequest = { silent: boolean; done: Promise<void> };
 
 type ListItem = Exclude<TimelineItem, { type: 'synthesis' }>;
 type RoundItem = Extract<ListItem, { type: 'roundHeader' }>;
@@ -117,6 +127,7 @@ function MeetingContent({ data, displayStyle, refreshing, refresh }: {
   );
   const listProps = {
     contentContainerStyle: styles.list,
+    keyboardShouldPersistTaps: 'handled' as const,
     keyExtractor: itemKey,
     renderItem,
     refreshControl: <RefreshControl refreshing={refreshing} onRefresh={refresh} />,
@@ -144,61 +155,121 @@ function ItemSeparator() {
   return <View style={styles.separator} />;
 }
 
+function RunnerIndicator({ runner }: { runner?: RunnerState }) {
+  if (!runner || runner.phase === 'idle') return null;
+  return (
+    <View style={styles.runner} accessibilityLiveRegion="polite">
+      <Text style={[
+        ui.chip,
+        runner.phase === 'awaiting_approval' && ui.warning,
+        runner.phase === 'error' && ui.danger,
+      ]}>{runnerLabels[runner.phase]}</Text>
+      {runner.phase === 'error' && runner.detail !== null && <Text style={ui.muted}>{runner.detail}</Text>}
+    </View>
+  );
+}
+
 function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: string }) {
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<LoadError>();
-  const [data, setData] = useState<MeetingData>();
+  const [error, setError] = useState<string>();
+  const [meeting, setMeeting] = useState<LoadedMeeting>();
   const [displayStyle, setDisplayStyle] = useState<DisplayStyle>('line');
   const [settingsReady, setSettingsReady] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
+  const [writeBusy, setWriteBusy] = useState(false);
+  const [writeError, setWriteError] = useState<string>();
+  const [addressee, setAddressee] = useState<string>();
+  const [text, setText] = useState('');
   const active = useRef(false);
-  const inFlight = useRef<symbol | null>(null);
+  const inFlight = useRef<RefreshRequest | null>(null);
+  const writing = useRef(false);
   const firstFocus = useRef(true);
   const saveAttempt = useRef(0);
+  const focused = useIsFocused();
 
-  const refresh = useCallback(async () => {
-    if (inFlight.current) return;
-    const request = Symbol();
-    inFlight.current = request;
-    setLoading(true);
-    setError(undefined);
-    try {
-      let result: MeetingData;
-      if (fixture) {
-        const sample = meetingId ? loadFixtureMeeting(meetingId) : null;
-        if (!sample) throw new FacadeError('not_found');
-        result = sample;
-      } else {
-        const { facadeUrl, token, meetingId: savedId } = await loadSettings();
-        if (!facadeUrl) throw new FacadeError('unreachable');
-        const id = meetingId ?? savedId;
-        if (!id) throw new FacadeError('not_found');
-        result = await fetchMeeting(facadeUrl, token, id);
-      }
-      if (inFlight.current === request) setData(result);
-    } catch (cause) {
-      if (inFlight.current === request) {
-        const kind = cause instanceof FacadeError ? cause.kind : fixture ? 'fixture' : 'http';
-        if (kind === 'unauthorized' || kind === 'not_found') setData(undefined);
-        setError(kind);
-      }
-    } finally {
-      if (inFlight.current === request) {
-        inFlight.current = null;
-        setLoading(false);
+  const { data, runner, connection } = meeting ?? {};
+  const state = data?.state;
+  const phase = state?.meeting_state;
+  const terminal = phase === 'APPROVED' || phase === 'REJECTED';
+  const canPoll = !fixture && !!state && !terminal;
+  const canApprove = !!connection && phase === 'AWAITING_APPROVAL';
+  const canMention = !!connection && !!state && !terminal &&
+    phase !== 'CREATED' && phase !== 'OPEN' &&
+    !state.round_states.some(round => round.phase === 'open') &&
+    (runner?.phase === 'idle' || runner?.phase === 'done' || runner?.phase === 'error' ||
+      runner?.phase === 'awaiting_approval');
+  const seatId = state?.seats.some(seat => seat.seat_id === addressee) ? addressee : undefined;
+
+  const refresh = useCallback((silent = false) => {
+    const pending = inFlight.current;
+    if (writing.current || (pending && (silent || !pending.silent))) return;
+    if (!silent) {
+      setLoading(true);
+      setError(undefined);
+    }
+    if (pending) {
+      pending.silent = false;
+      return;
+    }
+
+    async function load() {
+      try {
+        let result: LoadedMeeting;
+        if (fixture) {
+          const sample = meetingId ? loadFixtureMeeting(meetingId) : null;
+          if (!sample) throw new FacadeError('not_found');
+          result = { data: sample };
+        } else {
+          const { facadeUrl, token, meetingId: savedId } = await loadSettings();
+          if (!facadeUrl.trim()) throw new FacadeError('unreachable');
+          const id = meetingId ?? savedId;
+          if (!id) throw new FacadeError('not_found');
+          const [remote, runnerResult] = await Promise.allSettled([
+            fetchMeeting(facadeUrl, token, id),
+            fetchRunner(facadeUrl, token, id),
+          ]);
+          if (remote.status === 'rejected') {
+            if (runnerResult.status === 'rejected' && inFlight.current === request && !writing.current) {
+              setMeeting(current => current?.runner ? { ...current, runner: undefined } : current);
+            }
+            throw remote.reason;
+          }
+          result = {
+            data: remote.value,
+            runner: runnerResult.status === 'fulfilled' ? runnerResult.value : undefined,
+            connection: { facadeUrl, token, id },
+          };
+        }
+        if (inFlight.current === request && !writing.current) {
+          setMeeting(result);
+          setError(undefined);
+        }
+      } catch (cause) {
+        if (inFlight.current !== request || writing.current || request.silent) return;
+        if (cause instanceof FacadeError && (cause.kind === 'unauthorized' || cause.kind === 'not_found')) {
+          setMeeting(undefined);
+        }
+        setError(fixture && !(cause instanceof FacadeError)
+          ? 'サンプル会議の読み込みに失敗しました'
+          : describeFacadeError(cause));
       }
     }
+
+    const request: RefreshRequest = {
+      silent,
+      done: Promise.resolve().then(load).finally(() => {
+        if (inFlight.current === request) {
+          inFlight.current = null;
+          if (!request.silent) setLoading(false);
+        }
+      }),
+    };
+    inFlight.current = request;
   }, [fixture, meetingId]);
 
   useEffect(() => {
     active.current = true;
-    void loadSettings().then(settings => {
-      if (active.current) {
-        setDisplayStyle(settings.displayStyle);
-        setSettingsReady(true);
-      }
-    });
-    void refresh();
+    refresh();
     return () => {
       active.current = false;
       firstFocus.current = true;
@@ -207,17 +278,82 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
   }, [refresh]);
 
   useFocusEffect(useCallback(() => {
-    if (firstFocus.current) {
-      firstFocus.current = false;
-    } else {
-      let focused = true;
-      void loadSettings().then(settings => {
-        if (focused) setDisplayStyle(settings.displayStyle);
-      });
-      if (!fixture) void refresh();
-      return () => { focused = false; };
+    let current = true;
+    void loadSettings().then(settings => {
+      if (current) {
+        setDisplayStyle(settings.displayStyle);
+        setSettingsReady(true);
+      }
+    });
+    if (!firstFocus.current && !fixture && !terminal) refresh(true);
+    firstFocus.current = false;
+    return () => { current = false; };
+  }, [fixture, refresh, terminal]));
+
+  useEffect(() => {
+    if (!focused || !canPoll) return;
+    const timer = setInterval(() => refresh(true), 5_000);
+    return () => clearInterval(timer);
+  }, [canPoll, focused, refresh]);
+
+  async function write(action: (target: Connection) => Promise<void>) {
+    if (!connection || writing.current || !active.current) return;
+    writing.current = true;
+    setWriteBusy(true);
+    setWriteError(undefined);
+    let refreshAfterWrite = false;
+    try {
+      const settings = await loadSettings();
+      if (!active.current) return;
+      if (settings.facadeUrl !== connection.facadeUrl || settings.token !== connection.token ||
+          (meetingId ?? settings.meetingId) !== connection.id) {
+        setWriteError('接続設定が変更されました。会議を更新してください');
+      } else {
+        await action(connection);
+      }
+      refreshAfterWrite = true;
+      // Let any older read finish before starting the post-write refresh.
+      await inFlight.current?.done;
+    } catch (cause) {
+      if (active.current) setWriteError(describeFacadeError(cause));
+    } finally {
+      writing.current = false;
+      if (active.current) {
+        setWriteBusy(false);
+        if (refreshAfterWrite) refresh(true);
+      }
     }
-  }, [fixture, refresh]));
+  }
+
+  function confirmApproval(decision: ApproveDecision) {
+    const label = approvalLabels[decision];
+    Alert.alert(label, decision === 'approve' ? 'この会議を承認しますか？' : 'この会議を却下しますか？', [
+      { text: 'キャンセル', style: 'cancel' },
+      {
+        text: label,
+        style: decision === 'reject' ? 'destructive' : 'default',
+        onPress: () => void write(async ({ facadeUrl, token, id }) => {
+          const nextState = await postApprove(facadeUrl, token, id, decision);
+          if (active.current) setMeeting(current => current && {
+            ...current, runner: undefined, data: { ...current.data, state: nextState },
+          });
+        }),
+      },
+    ], { cancelable: true });
+  }
+
+  const canSend = canMention && seatId !== undefined && !!text.trim() && !writeBusy;
+  function sendMention() {
+    if (!canSend || seatId === undefined) return;
+    void write(async ({ facadeUrl, token, id }) => {
+      const nextRunner = await postMention(facadeUrl, token, id, { seat_id: seatId, text: text.trim() });
+      if (active.current) {
+        setMeeting(current => current && { ...current, runner: nextRunner });
+        setText('');
+        setAddressee(undefined);
+      }
+    });
+  }
 
   function chooseStyle(value: DisplayStyle) {
     setDisplayStyle(value);
@@ -228,17 +364,32 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
     });
   }
 
-  const update = () => void refresh();
+  const update = () => refresh();
+  const writeFeedback = writeError && <Text accessibilityLiveRegion="polite" style={[ui.body, styles.error]}>{writeError}</Text>;
 
   return (
-    <View style={styles.screen}>
+    <KeyboardAvoidingView style={styles.screen} behavior={!fixture && Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={styles.header}>
         {data && (
           <>
-            <StateBanner state={data.state.meeting_state} />
+            <StateBanner state={data.state.meeting_state} canApprove={canApprove} />
             <Text accessibilityRole="header" style={ui.title}>{topicOf(data.packets) || '会議'}</Text>
+            <RunnerIndicator runner={runner} />
           </>
         )}
+        {canApprove && (
+          <View style={styles.controls}>
+            <Pressable accessibilityRole="button" disabled={writeBusy} onPress={() => confirmApproval('approve')}
+              style={[ui.button, ui.primary, writeBusy && ui.disabled]}>
+              <Text style={ui.primaryText}>{approvalLabels.approve}</Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" disabled={writeBusy} onPress={() => confirmApproval('reject')}
+              style={[ui.button, styles.dangerButton, writeBusy && ui.disabled]}>
+              <Text style={[ui.label, styles.error]}>{approvalLabels.reject}</Text>
+            </Pressable>
+          </View>
+        )}
+        {!canMention && writeFeedback}
         <View style={styles.controls}>
           <View style={styles.segmented}>
             {displayStyles.map(({ value, label }) => (
@@ -252,7 +403,7 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
               </Pressable>
             ))}
           </View>
-          <Pressable accessibilityRole="button" disabled={loading} onPress={update} style={ui.button}>
+          <Pressable accessibilityRole="button" disabled={loading || writeBusy} onPress={update} style={ui.button}>
             <Text style={ui.label}>更新</Text>
           </Pressable>
         </View>
@@ -260,7 +411,7 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
       </View>
       {error && (
         <View style={styles.status}>
-          <Text accessibilityLiveRegion="polite" style={[ui.body, styles.error]}>{errorMessages[error]}</Text>
+          <Text accessibilityLiveRegion="polite" style={[ui.body, styles.error]}>{error}</Text>
           <Pressable accessibilityRole="button" onPress={update} style={ui.button}>
             <Text style={ui.label}>再試行</Text>
           </Pressable>
@@ -268,7 +419,41 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
       )}
       {data ? <MeetingContent data={data} displayStyle={displayStyle} refreshing={loading} refresh={update} />
         : loading && <ActivityIndicator style={styles.status} color={colors.teal} accessibilityLabel="読み込み中" />}
-    </View>
+      {canMention && (
+        <SafeAreaView edges={['bottom']} style={styles.composer}>
+          <View style={styles.composerContent}>
+            <ScrollView horizontal keyboardShouldPersistTaps="handled"
+              style={styles.seatScroll} contentContainerStyle={styles.seatRow}>
+              {state.seats.map(({ seat_id }) => {
+                const selected = seat_id === seatId;
+                return (
+                  <Pressable key={seat_id} accessibilityRole="button" accessibilityLabel={seat_id}
+                    accessibilityState={{ selected, disabled: writeBusy }} disabled={writeBusy}
+                    onPress={() => setAddressee(seat_id)} style={[ui.button, styles.seat, selected && ui.primary]}>
+                    <View style={styles.avatar} aria-hidden>
+                      <Text style={ui.label}>{Array.from(seat_id)[0]?.toUpperCase()}</Text>
+                    </View>
+                    <Text style={selected ? ui.primaryText : ui.label}>{seat_id}</Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+            {seatId === undefined && (
+              <Text style={ui.muted}>宛先のエージェントを選んでください（＠メンション）。宛先なしの投稿はできません</Text>
+            )}
+            {writeFeedback}
+            <View style={styles.messageRow}>
+              <TextInput accessibilityLabel="メンションの内容" style={[ui.input, styles.mentionInput, seatId === undefined && ui.disabled]}
+                value={text} onChangeText={setText} editable={seatId !== undefined && !writeBusy} multiline />
+              <Pressable accessibilityRole="button" disabled={!canSend} onPress={sendMention}
+                style={[ui.button, ui.primary, !canSend && ui.disabled]}>
+                <Text style={ui.primaryText}>送信</Text>
+              </Pressable>
+            </View>
+          </View>
+        </SafeAreaView>
+      )}
+    </KeyboardAvoidingView>
   );
 }
 
@@ -283,7 +468,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.white, borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border, gap: 10, padding: 14,
   },
+  runner: { alignItems: 'flex-start', gap: 4 },
   controls: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 },
+  dangerButton: { backgroundColor: colors.redBackground },
   segmented: { flex: 1, minWidth: 210, flexDirection: 'row', gap: 4 },
   segment: { flex: 1 },
   list: { width: '100%', maxWidth: 800, alignSelf: 'center', padding: 14, paddingBottom: 36 },
@@ -293,4 +480,17 @@ const styles = StyleSheet.create({
   message: { alignSelf: 'center', textAlign: 'center', marginVertical: 8 },
   status: { padding: 14, gap: 8, alignItems: 'center' },
   error: { color: colors.red, textAlign: 'center' },
+  composer: {
+    backgroundColor: colors.white, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border,
+  },
+  composerContent: { width: '100%', maxWidth: 800, alignSelf: 'center', padding: 12, gap: 8 },
+  seatScroll: { flexGrow: 0 },
+  seatRow: { gap: 8 },
+  seat: { flexDirection: 'row', gap: 6 },
+  avatar: {
+    width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.white,
+  },
+  messageRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 },
+  mentionInput: { flex: 1, maxHeight: 100, paddingVertical: 8 },
 });

@@ -1,8 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import type { SeatKind } from './types';
 
 export type DisplayStyle = 'line' | 'slack';
 
-export const AGENT_PRESETS: { id: string; label: string; description: string }[] = [
+export const AGENT_PRESETS: { id: SeatKind; label: string; description: string }[] = [
   { id: 'codex-cli', label: 'Codex (CLI)', description: 'サブスクリプションの Codex CLI 席' },
   { id: 'claude-code-cli', label: 'Claude Code (CLI)', description: 'サブスクリプションの Claude Code CLI 席' },
   { id: 'api', label: 'API席', description: 'API キーで接続する席' },

@@ -14,6 +14,8 @@ export function createMeetingViews(env: NodeJS.ProcessEnv = process.env) {
   const getCore = () => core ??= createCore({ home, isHuman: id => humans.has(id) });
 
   return {
+    principal,
+    getCore,
     list: () => listMeetings(home),
     state: (meeting_id: string) => getCore().get_state(principal, { meeting_id }),
     packets: (meeting_id: string) => getCore().get_packets(principal, {
