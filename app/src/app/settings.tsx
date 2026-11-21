@@ -106,7 +106,7 @@ export default function SettingsScreen() {
               </Pressable>
             );
           })}
-          <Text style={ui.muted}>選択は次フェーズのセッション作成で使われます（この版では作成はまだできません）。</Text>
+          <Text style={ui.muted}>選択は新規セッションの作成時に使われます。</Text>
         </View>
 
         <View style={ui.card}>

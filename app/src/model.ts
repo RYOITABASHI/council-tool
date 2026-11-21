@@ -1,7 +1,6 @@
 import { isPacketKind } from './types';
 import type { GetPacketsResponse, GetStateResponse, PacketEntry, Round, RoundState } from './types';
 
-const rounds: Round[] = ['R0', 'R1', 'R2'];
 export type MessageEntry = PacketEntry<'answer' | 'critique' | 'flash' | 'note'>;
 
 export type TimelineItem =
@@ -43,13 +42,17 @@ export function groupByRound(state: GetStateResponse, packets: GetPacketsRespons
   const agenda = entries.find(entry => isPacketKind(entry, 'agenda'));
   const notes = entries.filter(entry => isPacketKind(entry, 'note'))
     .filter(entry => entry.packet.header.round === null);
-  const synthesis = entries.find(entry => isPacketKind(entry, 'synthesis'));
+  const synthesis = entries.find((entry): entry is PacketEntry<'synthesis'> =>
+    isPacketKind(entry, 'synthesis') && entry.packet_state.version === 'current');
+  const rounds = new Set(state.round_states.map(({ round }) => round));
+  for (const { packet } of entries) {
+    if (packet.header.round != null) rounds.add(packet.header.round);
+  }
 
   const sections: RoundGroup[] = [];
-  for (const round of rounds) {
+  for (const round of [...rounds].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))) {
     const roundState = state.round_states.find(candidate => candidate.round === round);
     const roundEntries = entries.filter(entry => entry.packet.header.round === round);
-    if (!roundState && roundEntries.length === 0) continue;
 
     const messages = roundEntries.filter(entry =>
       isPacketKind(entry, 'answer') || isPacketKind(entry, 'critique') ||

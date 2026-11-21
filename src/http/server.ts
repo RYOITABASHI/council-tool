@@ -1,10 +1,12 @@
 import { timingSafeEqual } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import type { ServerResponse } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { ERROR_CODES } from '../core/types.js';
+import { blank, record, requireArgument, validate } from '../core/validation.js';
+import type { runCli } from '../drivers/index.js';
+import { HostRunner, isCliSeatKind } from './host-runner.js';
 import { createMeetingViews } from './meeting-views.js';
 
 function sendJson(response: ServerResponse, status: number, body: unknown) {
@@ -15,17 +17,56 @@ function sendJson(response: ServerResponse, status: number, body: unknown) {
   response.end(JSON.stringify(body));
 }
 
-function coreErrorCode(error: unknown) {
-  if (typeof error === 'object' && error !== null && 'code' in error) {
-    return ERROR_CODES.find(code => code === error.code);
+const errorStatuses = {
+  invalid_argument: 400,
+  // The core uses unauthorized for both missing and inaccessible meetings.
+  unauthorized: 404,
+  not_found: 404,
+  invalid_state: 409,
+  runner_active: 409,
+  seat_kind_unavailable: 422,
+} as const;
+
+async function readJson(request: IncomingMessage, allowEmpty = false): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(chunk);
+  if (allowEmpty && chunks.length === 0) return {};
+  let body: unknown;
+  try {
+    body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)));
+  } catch {
+    throw { code: 'invalid_argument' };
   }
+  requireArgument(record(body));
+  return body;
 }
 
-export function createConfiguredHttpServer(env: NodeJS.ProcessEnv = process.env) {
+function createArgs(body: Record<string, unknown>, principal: string) {
+  const { topic, seats } = body;
+  requireArgument(Object.keys(body).length === 2 && typeof topic === 'string' && !blank(topic) &&
+    Array.isArray(seats) && seats.length > 0);
+  const configuredSeats = seats.map(seat => {
+    requireArgument(record(seat) && Object.keys(seat).length === 2 && typeof seat.seat_id === 'string');
+    const { seat_id, kind } = seat;
+    requireArgument(isCliSeatKind(kind) || kind === 'api' || kind === 'local');
+    return {
+      seat_id, principal: `agent:${seat_id}`, driver_principals: [principal],
+      connection: isCliSeatKind(kind) ? 'cli' : kind, role: kind,
+    };
+  });
+  const args = validate('create_meeting', {
+    topic, chair: { principal }, human_participants: [principal], seats: configuredSeats,
+  });
+  if (configuredSeats.some(seat => seat.connection !== 'cli')) throw { code: 'seat_kind_unavailable' };
+  return args;
+}
+
+export function createConfiguredHttpServer(env: NodeJS.ProcessEnv = process.env, options: { runCli?: typeof runCli } = {}) {
   const token = env.COUNCIL_HTTP_TOKEN;
   if (!token?.trim()) throw new Error('COUNCIL_HTTP_TOKEN must be set');
   const expectedAuthorization = Buffer.from(`Bearer ${token}`);
   const views = createMeetingViews(env);
+  const runner = new HostRunner(views.getCore, views.principal, options.runCli);
 
   const server = createServer(async (request, response) => {
     const path = request.url?.split('?', 1)[0] ?? '';
@@ -39,11 +80,16 @@ export function createConfiguredHttpServer(env: NodeJS.ProcessEnv = process.env)
       return sendJson(response, 401, { code: 'unauthorized' });
     }
 
-    if (request.method !== 'GET') return sendJson(response, 404, { code: 'not_found' });
-
     try {
-      if (path === '/meetings') return sendJson(response, 200, views.list());
-      const route = /^\/meetings\/([^/]+)\/(state|packets)$/.exec(path);
+      if (path === '/meetings') {
+        if (request.method === 'GET') return sendJson(response, 200, views.list());
+        if (request.method === 'POST') {
+          const args = createArgs(await readJson(request), views.principal);
+          const { meeting_id } = await views.getCore().create_meeting(views.principal, args);
+          return sendJson(response, 201, { meeting_id });
+        }
+      }
+      const route = /^\/meetings\/([^/]+)\/(state|packets|runner|start|mention|approve)$/.exec(path);
       if (!route) return sendJson(response, 404, { code: 'not_found' });
 
       let meetingId: string;
@@ -54,15 +100,40 @@ export function createConfiguredHttpServer(env: NodeJS.ProcessEnv = process.env)
       }
       if (meetingId.includes('/')) return sendJson(response, 404, { code: 'not_found' });
 
-      const body = route[2] === 'state' ? await views.state(meetingId) : await views.packets(meetingId);
-      return sendJson(response, 200, body);
-    } catch (error) {
-      const code = coreErrorCode(error);
-      // Phase 1 uses unauthorized for both missing and inaccessible meetings.
-      if (code === 'unauthorized' || code === 'not_found') {
-        return sendJson(response, 404, { code });
+      const action = route[2];
+      if (request.method === 'GET') {
+        if (action === 'state') return sendJson(response, 200, await views.state(meetingId));
+        if (action === 'packets') return sendJson(response, 200, await views.packets(meetingId));
+        if (action === 'runner') return sendJson(response, 200, await runner.status(meetingId));
       }
-      return sendJson(response, 500, { code: code ?? 'internal_error' });
+      if (request.method === 'POST') {
+        if (action === 'start') {
+          requireArgument(Object.keys(await readJson(request, true)).length === 0);
+          const { phase } = await runner.start(meetingId);
+          return sendJson(response, 202, { runner: { phase } });
+        }
+        if (action === 'mention') {
+          const body = await readJson(request);
+          const args = validate('open_round', { meeting_id: meetingId, mention: body });
+          requireArgument('mention' in args);
+          return sendJson(response, 202, { runner: await runner.mention(meetingId, args.mention) });
+        }
+        if (action === 'approve') {
+          const body = await readJson(request);
+          const { decision } = body;
+          requireArgument(Object.keys(body).length === 1 && (decision === 'approve' || decision === 'reject'));
+          const { meeting_state } = await views.getCore().approve(views.principal, { meeting_id: meetingId, decision });
+          return sendJson(response, 200, { meeting_state });
+        }
+      }
+      return sendJson(response, 404, { code: 'not_found' });
+    } catch (error) {
+      if (record(error) && typeof error.code === 'string' && Object.hasOwn(errorStatuses, error.code)) {
+        const { code, detail } = error;
+        return sendJson(response, errorStatuses[code as keyof typeof errorStatuses],
+          { code, ...(detail === undefined ? {} : { detail }) });
+      }
+      return sendJson(response, 500, { code: 'internal_error' });
     }
   });
   server.once('close', views.close);

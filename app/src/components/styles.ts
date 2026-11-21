@@ -27,6 +27,9 @@ export const ui = StyleSheet.create({
   wrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   button: { justifyContent: 'center', alignItems: 'center', minHeight: 44, paddingHorizontal: 12,
     paddingVertical: 8, borderRadius: 10, backgroundColor: colors.pale },
+  input: { minHeight: 48, borderWidth: 1, borderColor: colors.border, borderRadius: 8,
+    paddingHorizontal: 12, fontSize: 16, color: colors.ink },
+  disabled: { opacity: 0.55 },
   primary: { backgroundColor: colors.teal },
   primaryText: { color: colors.white, fontWeight: '700' },
 });

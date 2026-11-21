@@ -1,6 +1,6 @@
 import { router, Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { Pressable, StyleSheet, Text } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { colors } from '../components/styles';
 
 function SettingsButton() {
@@ -9,6 +9,18 @@ function SettingsButton() {
       onPress={() => router.push('/settings')} style={styles.gear}>
       <Text style={styles.icon}>⚙</Text>
     </Pressable>
+  );
+}
+
+function SessionButtons() {
+  return (
+    <View style={styles.actions}>
+      <Pressable accessibilityRole="button" accessibilityLabel="新規セッション"
+        onPress={() => router.push('/compose')} style={styles.gear}>
+        <Text style={styles.icon}>＋</Text>
+      </Pressable>
+      <SettingsButton />
+    </View>
   );
 }
 
@@ -22,7 +34,8 @@ export default function RootLayout() {
         headerStyle: { backgroundColor: colors.white },
         contentStyle: { backgroundColor: colors.page },
       }}>
-        <Stack.Screen name="index" options={{ title: 'セッション', headerRight: SettingsButton }} />
+        <Stack.Screen name="index" options={{ title: 'セッション', headerRight: SessionButtons }} />
+        <Stack.Screen name="compose" options={{ title: '新規セッション' }} />
         <Stack.Screen name="meeting" options={{ title: '会議', headerRight: SettingsButton }} />
         <Stack.Screen name="settings" options={{ title: '設定' }} />
       </Stack>
@@ -32,6 +45,7 @@ export default function RootLayout() {
 
 
 const styles = StyleSheet.create({
+  actions: { flexDirection: 'row', gap: 8 },
   gear: {
     width: 44, height: 44, borderRadius: 22, borderWidth: 1, borderColor: colors.border,
     alignItems: 'center', justifyContent: 'center',

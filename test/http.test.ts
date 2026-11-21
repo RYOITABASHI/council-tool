@@ -1,4 +1,3 @@
-import { once } from 'node:events';
 import { mkdtemp, readFile, rename, rm } from 'node:fs/promises';
 import { request } from 'node:http';
 import type { Server } from 'node:http';
@@ -7,11 +6,12 @@ import { join } from 'node:path';
 import { Duplex } from 'node:stream';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { afterAll, beforeAll, expect, test } from 'vitest';
+import { afterAll, beforeAll, expect, test, vi } from 'vitest';
 import { systemClock } from '../src/core/clock.js';
 import { createCore } from '../src/core/index.js';
 import { createConfiguredHttpServer } from '../src/http/server.js';
 import { createConfiguredMcpServer } from '../src/mcp/server.js';
+import type { Packet } from '../src/packet/index.js';
 
 const principal = 'host:operator';
 const authorization = 'Bearer test-council-token';
@@ -29,9 +29,9 @@ let home: string;
 let meetingId: string;
 let secondMeetingId: string;
 let server: Server;
-let port: number | undefined;
 let client: Client;
 let mcp: ReturnType<typeof createConfiguredMcpServer>;
+const runCli = vi.fn<(config: { kind: string }, prompt: string) => Promise<string>>();
 
 // Socket-restricted sandboxes can still exercise Node's HTTP client and parser.
 function connectOverStreams(server: Server): Duplex {
@@ -54,13 +54,17 @@ function connectOverStreams(server: Server): Duplex {
   return outbound;
 }
 
-function getResponse(path: string, token?: string, method = 'GET', streamServer?: Server) {
-  return new Promise<{ status: number | undefined; body: unknown }>((resolve, reject) => {
+function getResponse<Body = unknown>(path: string, token?: string, method = 'GET', streamServer?: Server, input?: unknown) {
+  const payload = input === undefined ? undefined : JSON.stringify(input);
+  return new Promise<{ status: number | undefined; body: Body }>((resolve, reject) => {
     const req = request({
       hostname: '127.0.0.1', path, method,
-      ...(streamServer || port === undefined
-        ? { createConnection: () => connectOverStreams(streamServer ?? server) } : { port }),
-      headers: { Connection: 'close', ...(token === undefined ? {} : { Authorization: token }) },
+      createConnection: () => connectOverStreams(streamServer ?? server),
+      headers: {
+        Connection: 'close',
+        ...(token === undefined ? {} : { Authorization: token }),
+        ...(payload === undefined ? {} : { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }),
+      },
     }, async response => {
       try {
         let body = '';
@@ -72,7 +76,7 @@ function getResponse(path: string, token?: string, method = 'GET', streamServer?
       }
     });
     req.on('error', reject);
-    req.end();
+    req.end(payload);
   });
 }
 
@@ -124,16 +128,7 @@ beforeAll(async () => {
   await mcp.connect(serverTransport);
   await client.connect(clientTransport);
 
-  server = createConfiguredHttpServer(env);
-  try {
-    const listening = once(server, 'listening');
-    server.listen(0, '127.0.0.1');
-    await listening;
-    const address = server.address();
-    if (address && typeof address === 'object') port = address.port;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EPERM') throw error;
-  }
+  server = createConfiguredHttpServer(env, { runCli });
 });
 
 afterAll(async () => {
@@ -227,11 +222,252 @@ test('requires authentication before routing other paths', async () => {
   expect(await getResponse('/missing', authorization)).toEqual({ status: 404, body: { code: 'not_found' } });
 });
 
-test('rejects non-GET requests', async () => {
+test('rejects unsupported methods on read-only routes', async () => {
   expect(await getResponse('/health', undefined, 'POST')).toEqual({ status: 401, body: { code: 'unauthorized' } });
-  expect(await getResponse('/meetings', authorization, 'POST')).toEqual({ status: 404, body: { code: 'not_found' } });
   expect(await getResponse(`/meetings/${meetingId}/state`, authorization, 'POST'))
     .toEqual({ status: 404, body: { code: 'not_found' } });
+});
+
+const synthesis = {
+  agreements: ['Use a pilot'], minority_opinions: [], reversal_conditions: [],
+  recommendation: 'Run a pilot first.', cited_materials: [], unverified_items: [], missing_records: [],
+};
+const post = <Body = unknown>(path: string, input: unknown = {}) =>
+  getResponse<Body>(path, authorization, 'POST', undefined, input);
+const get = (path: string) => getResponse(path, authorization);
+const getPackets = (path: string) => getResponse<{ new_packets: { packet: Packet }[] }>(`${path}/packets`, authorization);
+const codexSeat = { seat_id: 'reviewer', kind: 'codex-cli' };
+
+async function createMeeting(seats = [codexSeat]) {
+  const created = await post<{ meeting_id: string }>('/meetings', { topic: 'Should we run a pilot?', seats });
+  expect(created).toEqual({ status: 201, body: { meeting_id: expect.any(String) } });
+  return `/meetings/${created.body.meeting_id}`;
+}
+
+async function waitForPhase(path: string, phase: string) {
+  return vi.waitFor(async () => {
+    const response = await getResponse<{ detail: string | null }>(`${path}/runner`, authorization);
+    expect(response).toEqual({
+      status: 200, body: { phase, detail: phase === 'error' ? expect.any(String) : null, updated_at: expect.any(String) },
+    });
+    return response.body;
+  }, { timeout: 10_000 });
+}
+
+test.each([undefined, 'Bearer wrong-token'])('requires Bearer auth for every POST with token %j', async token => {
+  for (const path of ['/meetings', ...['start', 'mention', 'approve'].map(route => `/meetings/${meetingId}/${route}`)]) {
+    expect(await getResponse(path, token, 'POST', undefined, {}))
+      .toEqual({ status: 401, body: { code: 'unauthorized' } });
+  }
+  expect(await getResponse(`/meetings/${meetingId}/runner`, token))
+    .toEqual({ status: 401, body: { code: 'unauthorized' } });
+});
+
+test.each([
+  { topic: '', seats: [codexSeat] },
+  { topic: 'Topic', seats: [{ seat_id: 'reviewer', kind: 'unknown' }] },
+  { topic: 'Topic', seats: [] },
+  { topic: 'Topic', seats: [codexSeat, codexSeat] },
+])('rejects malformed create payload %j', async body => {
+  expect(await post('/meetings', body)).toEqual({ status: 400, body: { code: 'invalid_argument' } });
+});
+
+test.each(['api', 'local'])('refuses %s seats with the pinned error', async kind => {
+  expect(await post('/meetings', { topic: 'Topic', seats: [{ seat_id: 'reviewer', kind }] }))
+    .toEqual({ status: 422, body: { code: 'seat_kind_unavailable' } });
+});
+
+test.each([['approve', 'APPROVED'], ['reject', 'REJECTED']])('can %s a pre-existing AWAITING_APPROVAL meeting', async (decision, state) => {
+  const core = createCore({ home, isHuman: id => id === principal });
+  let meeting_id: string;
+  try {
+    ({ meeting_id } = await core.create_meeting(principal, {
+      topic: 'An externally prepared meeting', chair: { principal: 'chair' }, human_participants: [principal],
+      seats: [{ seat_id: 'reviewer', principal: 'reviewer', connection: 'cli' }],
+    }));
+    for (const round of ['R0', 'R1']) {
+      await core.open_round('chair', { meeting_id, round });
+      await core.submit_answer('reviewer', { meeting_id, round, seat_id: 'reviewer', body: 'An answer' });
+    }
+    await core.chair_gate('chair', { meeting_id, result: 'pass' });
+    await core.synthesize('chair', { meeting_id, body: synthesis });
+  } finally {
+    core.close();
+  }
+  const path = `/meetings/${meeting_id}`;
+  expect((await get(`${path}/runner`)).body).toMatchObject({ phase: 'awaiting_approval' });
+  expect(await post(`${path}/approve`, { decision })).toEqual({ status: 200, body: { meeting_state: state } });
+  expect((await get(`${path}/runner`)).body).toMatchObject({ phase: 'done' });
+});
+
+test('rejects a mention while a round is open even without a host runner', async () => {
+  const path = await createMeeting();
+  const core = createCore({ home, isHuman: id => id === principal });
+  try {
+    await core.open_round(principal, { meeting_id: path.split('/').at(-1), round: 'R0' });
+  } finally {
+    core.close();
+  }
+  expect(await post(`${path}/mention`, { seat_id: 'reviewer', text: 'Please elaborate.' }))
+    .toEqual({ status: 409, body: { code: 'invalid_state', detail: { meeting_state: 'OPEN' } } });
+  expect((await getPackets(path)).body.new_packets).toHaveLength(1);
+});
+
+test('starts single-flight and records a directed round and superseding synthesis', async () => {
+  runCli.mockReset();
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  runCli.mockImplementation(async (_config, prompt) => {
+    if (prompt.includes('席: reviewer') && prompt.includes('ラウンド: R0')) await blocked;
+    if (prompt.startsWith('Chair gate')) return '{"result":"pass"}';
+    if (prompt.startsWith('Chair synthesis')) return JSON.stringify(synthesis);
+    return 'A stub seat answer.';
+  });
+  const path = await createMeeting([codexSeat, { seat_id: 'observer', kind: 'codex-cli' }]);
+  expect((await get(`${path}/runner`)).body).toEqual({ phase: 'idle', detail: null, updated_at: expect.any(String) });
+  try {
+    const starts = await Promise.all([post(`${path}/start`), post(`${path}/start`)]);
+    expect(starts).toEqual(expect.arrayContaining([
+      { status: 202, body: { runner: { phase: 'running' } } },
+      { status: 409, body: { code: 'runner_active' } },
+    ]));
+    expect((await get(`${path}/state`)).body).toMatchObject({ meeting_state: 'OPEN' });
+    expect(await post(`${path}/mention`, { seat_id: 'observer', text: 'Too soon' }))
+      .toEqual({ status: 409, body: { code: 'runner_active' } });
+  } finally {
+    release();
+  }
+  await waitForPhase(path, 'awaiting_approval');
+  expect(runCli.mock.calls.map(([config]) => config.kind)).toEqual(Array(6).fill('codex'));
+  const before = (await getPackets(path)).body;
+  const first = before.new_packets.find(entry => entry.packet.header.kind === 'synthesis');
+  expect(first).toBeDefined();
+  runCli.mockClear();
+  const text = 'What changes if the budget is cut?';
+  expect(await post(`${path}/mention`, { seat_id: 'observer', text })).toEqual({
+    status: 202, body: { runner: { phase: 'running', detail: null, updated_at: expect.any(String) } },
+  });
+  await waitForPhase(path, 'awaiting_approval');
+  expect(runCli.mock.calls).toHaveLength(2);
+  expect(runCli.mock.calls[0][1]).toContain('ラウンド: R2 / 席: observer');
+  expect(runCli.mock.calls[0][1]).toContain(text);
+  expect((await get(`${path}/state`)).body).toMatchObject({
+    meeting_state: 'AWAITING_APPROVAL',
+    reception_table: expect.arrayContaining([
+      expect.objectContaining({ round: 'R2', seat_id: 'reviewer', state: 'waived' }),
+      expect.objectContaining({ round: 'R2', seat_id: 'observer', state: 'received' }),
+    ]),
+  });
+  const packets = (await getPackets(path)).body;
+  expect(packets.new_packets).toEqual(expect.arrayContaining([
+    expect.objectContaining({ packet: expect.objectContaining({
+      header: expect.objectContaining({ kind: 'note' }), body: { text },
+    }) }),
+    expect.objectContaining({ packet: first?.packet, packet_state: expect.objectContaining({ version: 'superseded' }) }),
+    expect.objectContaining({ packet: expect.objectContaining({
+      header: expect.objectContaining({ kind: 'synthesis', supersedes: first?.packet.header.packet_id }),
+    }) }),
+  ]));
+  expect((await post(`${path}/mention`, { seat_id: 'observer', text: 'One more question' })).status).toBe(202);
+  await waitForPhase(path, 'awaiting_approval');
+  expect((await get(`${path}/state`)).body).toMatchObject({
+    round_states: [
+      { round: 'R0', phase: 'frozen' }, { round: 'R1', phase: 'frozen' },
+      { round: 'R2', phase: 'frozen' }, { round: 'R3', phase: 'frozen' },
+    ],
+  });
+  expect(await post(`${path}/approve`, { decision: 'approve' }))
+    .toEqual({ status: 200, body: { meeting_state: 'APPROVED' } });
+}, 20_000);
+
+test('preserves pending approval when the mentioned seat has exhausted its quota', async () => {
+  const core = createCore({ home, isHuman: id => id === principal });
+  let meeting_id: string;
+  try {
+    ({ meeting_id } = await core.create_meeting(principal, {
+      topic: 'Meeting with a small seat quota', chair: { principal }, human_participants: [principal],
+      seats: [{ seat_id: codexSeat.seat_id, principal, connection: 'cli', role: codexSeat.kind, quota: 2 }],
+    }));
+    for (const round of ['R0', 'R1']) {
+      await core.open_round(principal, { meeting_id, round });
+      await core.submit_answer(principal, { meeting_id, round, seat_id: codexSeat.seat_id, body: 'An answer' });
+    }
+    await core.chair_gate(principal, { meeting_id, result: 'pass' });
+    await core.synthesize(principal, { meeting_id, body: synthesis });
+  } finally {
+    core.close();
+  }
+  const path = `/meetings/${meeting_id}`;
+  expect(await post(`${path}/mention`, { seat_id: codexSeat.seat_id, text: 'Can you elaborate?' })).toEqual({
+    status: 409, body: { code: 'invalid_state', detail: {
+      meeting_state: 'AWAITING_APPROVAL', seat_id: codexSeat.seat_id, quota_exceeded: true,
+    } },
+  });
+  expect((await getPackets(path)).body.new_packets.some(({ packet }) => packet.header.kind === 'note')).toBe(false);
+  expect(await post(`${path}/approve`, { decision: 'approve' })).toEqual({ status: 200, body: { meeting_state: 'APPROVED' } });
+});
+
+test('runs a directed round from GATE for an optional seat without changing required quorum', async () => {
+  const core = createCore({ home, isHuman: id => id === principal });
+  let meeting_id: string;
+  try {
+    ({ meeting_id } = await core.create_meeting(principal, {
+      topic: 'Optional seat follow-up', chair: { principal }, human_participants: [principal], quorum: 1,
+      seats: [
+        { seat_id: 'required', principal, connection: 'cli', role: codexSeat.kind },
+        { seat_id: 'optional', principal, connection: 'cli', role: codexSeat.kind, optional: true },
+      ],
+    }));
+    await core.open_round(principal, { meeting_id, round: 'R0' });
+    await core.submit_answer(principal, { meeting_id, round: 'R0', seat_id: 'required', body: 'An answer' });
+  } finally {
+    core.close();
+  }
+  runCli.mockReset().mockImplementation(async (_config, prompt) =>
+    prompt.startsWith('Chair synthesis') ? JSON.stringify(synthesis) : 'An optional answer.');
+  const path = `/meetings/${meeting_id}`;
+  expect((await post(`${path}/mention`, { seat_id: 'optional', text: 'Your thoughts?' })).status).toBe(202);
+  await waitForPhase(path, 'awaiting_approval');
+  expect(runCli.mock.calls).toHaveLength(2);
+  expect((await getPackets(path)).body.new_packets).toEqual(expect.arrayContaining([
+    expect.objectContaining({ packet: expect.objectContaining({
+      header: expect.objectContaining({ kind: 'synthesis' }),
+      body: expect.objectContaining({ reception_summary: expect.stringContaining('R1: 受領1/2・欠席0・免除1（quorum未達）') }),
+    }) }),
+  ]));
+});
+
+test('a chair gate can open R2 for a designated dispute', async () => {
+  runCli.mockReset().mockImplementation(async (_config, prompt) => {
+    if (prompt.startsWith('Chair gate')) {
+      return JSON.stringify({ result: 'fail', unresolved_points: ['Budget limit'], next_round_scope: ['Estimate a budget limit'] });
+    }
+    if (prompt.startsWith('Chair synthesis')) return JSON.stringify(synthesis);
+    return 'A stub seat answer about the budget limit.';
+  });
+  const path = await createMeeting();
+  expect((await post(`${path}/start`)).status).toBe(202);
+  await waitForPhase(path, 'awaiting_approval');
+  expect((await get(`${path}/state`)).body).toMatchObject({
+    round_states: [{ round: 'R0', phase: 'frozen' }, { round: 'R1', phase: 'frozen' }, { round: 'R2', phase: 'frozen' }],
+  });
+});
+
+test.each(['gate', 'synthesis'])('retries malformed chair %s once and records the error', async stage => {
+  const prefix = `Chair ${stage}`;
+  const malformed = stage === 'gate' ? '{"result":"fail"}' : JSON.stringify({ ...synthesis, missing_records: [false] });
+  runCli.mockReset().mockImplementation(async (_config, prompt) => {
+    if (prompt.startsWith(prefix)) return malformed;
+    if (prompt.startsWith('Chair gate')) return '{"result":"pass"}';
+    return 'A stub seat answer.';
+  });
+  const path = await createMeeting();
+  expect((await post(`${path}/start`)).status).toBe(202);
+  expect((await waitForPhase(path, 'error')).detail).toContain(`invalid_chair_${stage}`);
+  expect(runCli.mock.calls.filter(([, prompt]) => prompt.startsWith(prefix))).toHaveLength(2);
+  expect((await getPackets(path)).body.new_packets).not.toEqual(expect.arrayContaining([
+    expect.objectContaining({ packet: expect.objectContaining({ header: expect.objectContaining({ kind: 'synthesis' }) }) }),
+  ]));
 });
 
 test.each([undefined, ''])('refuses to start with HTTP token %j', token => {
