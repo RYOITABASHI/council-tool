@@ -36,10 +36,9 @@ export const QUOTA_LIMITS = {
   local: nonWebQuota,
 } as const satisfies Record<SeatConnection, { default: number; max: number }>;
 
-// PROTOCOL.md §1.2 and §2
-export const ROUNDS = ['R0', 'R1', 'R2'] as const;
-// PROTOCOL.md §1.2 and §2
-export type Round = (typeof ROUNDS)[number];
+// The initial lifecycle has three configured rounds; directed rounds can continue the sequence.
+export type Round = `R${number}`;
+export const ROUNDS: readonly Round[] = ['R0', 'R1', 'R2'];
 
 // PROTOCOL.md §1.2 (BARRIER is an internal transition marker)
 export const MEETING_STATES = [

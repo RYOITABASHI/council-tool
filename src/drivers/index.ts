@@ -35,11 +35,8 @@ export function formatSeatPrompt(
   { meeting_id, round, seat_id }: SeatAssignment,
   packets: readonly Packet[],
 ): string {
-  const task = {
-    R0: '議題に回答してください。',
-    R1: '凍結された回答を批評してください。',
-    R2: '議長が指定した論点の範囲で回答してください。',
-  }[round];
+  const task = round === 'R0' ? '議題に回答してください。' : round === 'R1' ? '凍結された回答を批評してください。' :
+    '議長が指定した論点の範囲で回答してください。';
   return [
     `会議: ${meeting_id} / ラウンド: ${round} / 席: ${seat_id}`,
     task,
@@ -107,7 +104,7 @@ function readAnswer(stdout: string): AnswerBody {
   return { body: parsed.body, claims };
 }
 
-function runCommand(config: CliSeatConfig, prompt: string): Promise<string> {
+export function runCli(config: CliSeatConfig, prompt: string): Promise<string> {
   const preset = CLI_PRESETS[config.kind];
   const command = config.command ?? preset.command;
   const args = config.args ?? preset.args;
@@ -143,8 +140,9 @@ export async function runCliSeat(
   { prompt, meeting_id, round, seat_id, supersedes }: SeatPrompt,
   config: CliSeatConfig,
   call: ToolCaller,
+  execute = runCli,
 ) {
-  const answer = readAnswer(await runCommand(config, prompt));
+  const answer = readAnswer(await execute(config, prompt));
   return call('council.submit_answer', {
     meeting_id, round, seat_id, ...answer, ...(supersedes === undefined ? {} : { supersedes }),
   });

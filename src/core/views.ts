@@ -75,7 +75,7 @@ export function getPackets(m: Meeting, principal: string, human: boolean,
       ? [{ old_packet_id: header.supersedes, new_packet_id: header.packet_id }] : []);
   const common = { superseded, setup_version: m.setupVersion };
   if (oversight) {
-    const synthesis = m.packets.map(p => p.packet).find(p => p.header.kind === 'synthesis');
+    const synthesis = m.packets.find(p => p.version === 'current' && p.packet.header.kind === 'synthesis')?.packet;
     // Packet's discriminator is nested inside its header.
     const body = synthesis?.body;
     const declared = body && 'declared_missing_records' in body ? body.declared_missing_records : [];

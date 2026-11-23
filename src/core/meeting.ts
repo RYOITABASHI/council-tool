@@ -92,7 +92,8 @@ export function receptionReadyToFreeze(rows: readonly ReceptionRow[], required: 
 
 export function frozenReceptionSummary(m: Pick<Meeting, 'setup'>, r: RoundRecord): RoundRecord['summary'] {
   const required = requiredReceptionSeats(m.setup);
-  if (!receptionReadyToFreeze(r.rows, required)) return null;
+  // Keep the barrier open for the addressee and all explicit waivers, even for optional seats.
+  if (r.directedSeatId === undefined ? !receptionReadyToFreeze(r.rows, required) : r.rows.some(pending)) return null;
   return {
     total: r.rows.length,
     received: r.rows.filter(row => row.state === 'received').length,
@@ -112,7 +113,7 @@ export function freeze(m: Meeting, r: RoundRecord, now: ClockSample, position: n
     const packet = findPacket(m, row.current_packet_id);
     if (row.state === 'received' && packet) packet.missing = missingFields(packet);
   }
-  m.state = r.state.round === 'R2' ? 'SYNTHESIZING' : 'GATE';
+  m.state = r.directedSeatId !== undefined || r.state.round === 'R2' ? 'SYNTHESIZING' : 'GATE';
   startTimeout(m, now.monotonic);
   m.timeoutOrder = position;
 }
@@ -121,7 +122,8 @@ export function checkOverride(value: Deadline | undefined, now: ClockSample) {
   if (value?.kind === 'absolute') requireArgument(compare(parseAbsolute(value.at)!, instant(now.wall)) >= 0);
 }
 
-export function startRound(m: Meeting, round: Round, override: Deadline | undefined, now: ClockSample, position: number) {
+export function startRound(m: Meeting, round: Round, override: Deadline | undefined, now: ClockSample, position: number,
+  directedSeatId?: string) {
   const settings = m.setup.round_settings[round];
   let config = override ?? settings?.deadline;
   if (!override && config?.kind === 'absolute' && compare(parseAbsolute(config.at)!, instant(now.wall)) <= 0) {
@@ -142,6 +144,7 @@ export function startRound(m: Meeting, round: Round, override: Deadline | undefi
   }
   const r: RoundRecord = {
     state: { round, phase: 'open', opened_at: iso(now.wall), deadline_at, quorum: settings?.quorum ?? m.setup.quorum ?? null },
+    ...(directedSeatId === undefined ? {} : { directedSeatId }),
     deadline, relativeSeconds: config?.kind === 'relative' ? config.seconds : null, swept: false, sweepOrder: position,
     summary: null,
     rows: initialReceptionRows(m.setup, round),

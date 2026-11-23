@@ -78,6 +78,12 @@ const closedSeat = (state: string | undefined) => state === 'absent' || state ==
 const result = (packet: { header: { packet_id: string; packet_sha: string } }) =>
   ({ ...ok, packet_id: packet.header.packet_id, packet_sha: packet.header.packet_sha });
 
+function postNote(m: Meeting, c: Call, body: Operations['post_message']['body']) {
+  const round = m.state === 'OPEN' && !anySeat(m, c.principal) ? currentRound(m)?.state.round : undefined;
+  return result(append(m, c.now, 'note', { round: null, seat_id: null, supersedes: null },
+    body, round === undefined ? {} : { heldFor: round }));
+}
+
 function submit(m: Meeting, c: Call, a: Operations['submit_answer'], web: boolean) {
   const convenerTranscribing = web && m.convener === c.principal;
   if (!convenerTranscribing && !anySeat(m, c.principal)) fail('unauthorized');
@@ -93,6 +99,7 @@ function submit(m: Meeting, c: Call, a: Operations['submit_answer'], web: boolea
     !r.deadline || predecessor !== null || compare(instant(c.received), r.deadline) <= 0;
   const quotaExceeded = used(m, seat) >= seat.quota;
   if (!open(m, r) || (seat.connection === 'web') !== web ||
+      (r?.directedSeatId !== undefined && r.directedSeatId !== a.seat_id) ||
       closedSeat(row?.state) || !deadline_eligible || quotaExceeded) {
     fail('invalid_state', {
       ...receptionDetail(r, row), deadline_eligible, ...(quotaExceeded ? { quota_exceeded: true } : {}),
@@ -492,8 +499,17 @@ export class Core {
       chairOnly(m, c);
       checkOverride(args.deadline, c.now);
       const recognized = (id: string) => this.isHuman?.(id) ?? this.knownHumans.has(id);
-      if (args.round === 'R0' ? m.state !== 'CREATED' ||
-          !(c.principalHuman || recognized(m.convener) || m.setup.human_participants.some(recognized))
+      const hasHuman = () => c.principalHuman || recognized(m.convener) || m.setup.human_participants.some(recognized);
+      if ('mention' in args) {
+        if (m.state === 'OPEN' || terminal(m) || (m.state === 'CREATED' && !hasHuman())) stateError(m);
+        const { seat_id, text } = args.mention;
+        const seat = seatOrFail(m, seat_id);
+        if (used(m, seat) >= seat.quota) fail('invalid_state', { meeting_state: m.state, seat_id, quota_exceeded: true });
+        // Admit the note and its round together so a rejected opening leaves no stray note.
+        postNote(m, c, { text });
+        return { ...ok, round_state: startRound(m, `R${m.rounds.length}`, args.deadline, c.now, c.position, seat_id) };
+      }
+      if (args.round === 'R0' ? m.state !== 'CREATED' || !hasHuman()
         : m.state !== 'GATE' || currentRound(m)?.state.round !== 'R0') stateError(m);
       return { ...ok, round_state: startRound(m, args.round, args.deadline, c.now, c.position) };
     });
@@ -597,8 +613,9 @@ export class Core {
     this.run('synthesize', p, a, (m, args, c) => {
       chairOnly(m, c);
       const body = synthesis(m, args.body, c.now);
+      const previous = m.packets.find(p => p.packet.header.kind === 'synthesis' && p.version === 'current');
       const synthesis_packet = append(m, c.now, 'synthesis',
-        { round: null, seat_id: null, supersedes: null }, body);
+        { round: null, seat_id: null, supersedes: previous?.packet.header.packet_id ?? null }, body);
       m.state = 'AWAITING_APPROVAL';
       m.timeoutAt = null;
       return { ...ok, synthesis_packet };
@@ -630,9 +647,7 @@ export class Core {
     this.run('post_message', p, a, (m, args, c) => {
       if (!c.human) chairOnly(m, c);
       if (terminal(m)) stateError(m);
-      const round = m.state === 'OPEN' && !anySeat(m, c.principal) ? currentRound(m)?.state.round : undefined;
-      return result(append(m, c.now, 'note', { round: null, seat_id: null, supersedes: null },
-        args.body, round === undefined ? {} : { heldFor: round }));
+      return postNote(m, c, args.body);
     });
 
   confirm_share = (p: Principal, a: unknown) =>

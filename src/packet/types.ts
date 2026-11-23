@@ -54,7 +54,7 @@ export type PacketKind = keyof PacketBodies;
 type PacketLocation<K extends PacketKind> =
   K extends 'agenda' | 'synthesis' | 'note' ? { round: null; seat_id: null }
     : K extends 'gate_decision' ? { round: 'R1'; seat_id: null }
-    : { round: K extends 'answer' ? 'R0' | 'R2' : K extends 'critique' ? 'R1' : Round; seat_id: string };
+    : { round: K extends 'critique' ? 'R1' : Round; seat_id: string };
 
 // PROTOCOL.md §3.1 and §3.4
 export type HashablePacketHeader<K extends PacketKind = PacketKind> = {

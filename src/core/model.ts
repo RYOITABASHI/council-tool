@@ -31,6 +31,7 @@ export interface ReceptionRow {
 
 export interface RoundRecord {
   state: RoundState;
+  directedSeatId?: string;
   deadline: Instant | null;
   relativeSeconds: number | null;
   swept: boolean;
@@ -107,7 +108,9 @@ type Submission = Located & AnswerBody & { supersedes?: string | null };
 export interface Operations {
   create_meeting: Partial<Omit<Setup, 'chair' | 'seats'>> & { topic: string; seats: SeatConfig[]; chair: ChairConfig };
   update_setup: SetupUpdate & { meeting_id: string };
-  open_round: { meeting_id: string; round: 'R0' | 'R1'; deadline?: Deadline };
+  open_round: { meeting_id: string; deadline?: Deadline } & (
+    { round: 'R0' | 'R1' } | { mention: { seat_id: string; text: string } }
+  );
   submit_answer: Submission;
   transcribe_web_seat: Omit<Submission, 'claims'>;
   submit_flash: Located & { body: string; basis: string };
