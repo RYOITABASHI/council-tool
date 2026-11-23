@@ -13,7 +13,6 @@ export interface Clock {
 }
 
 function bootId(): string | undefined {
-  if (process.platform !== 'linux') return;
   try {
     return readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() || undefined;
   } catch {
