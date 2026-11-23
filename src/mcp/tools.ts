@@ -19,7 +19,7 @@ const object = (properties: Record<string, Schema>, ...required: string[]) => ({
 
 const id = { type: 'string', pattern: '^[A-Za-z0-9_-]+$' };
 const meeting = { meeting_id: string };
-const round = choices(...ROUNDS);
+const round = { type: 'string', pattern: '^R(?:0|[1-9][0-9]*)$' };
 const seatTarget = { ...meeting, round, seat_id: string };
 const seatTargetKeys = ['meeting_id', 'round', 'seat_id'];
 const submission = { ...seatTarget, body: string, supersedes: nullable(string) };
@@ -70,7 +70,12 @@ export const inputSchemas = {
     seats: array(object(seat, 'seat_id', 'principal', 'connection')),
     chair: object(chair, 'principal'),
   }, 'topic', 'seats', 'chair'),
-  open_round: object({ ...meeting, round: choices('R0', 'R1'), deadline }, 'meeting_id', 'round'),
+  open_round: {
+    ...object({ ...meeting, round: choices('R0', 'R1'), deadline,
+      mention: object({ seat_id: seat.seat_id, text: string }, 'seat_id', 'text'),
+    }, 'meeting_id'),
+    oneOf: [{ required: ['round'] }, { required: ['mention'] }],
+  },
   submit_answer: object({
     ...submission,
     claims: array(object({ statement: nullable(string), reversal_condition: nullable(string) })),

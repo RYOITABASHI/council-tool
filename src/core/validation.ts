@@ -27,6 +27,11 @@ const array = (check: Check): Check => v => Array.isArray(v) && [...v].every(che
 const strings = array(string);
 const id: Check = v => string(v) && /^[A-Za-z0-9_-]+$/.test(v) && !/\s/u.test(v);
 const seatId: Check = v => id(v) && v !== 'chair' && v !== 'human';
+const roundId: Check = v => {
+  if (typeof v !== 'string' || !v.startsWith('R')) return false;
+  const index = Number(v.slice(1));
+  return Number.isSafeInteger(index) && index >= 0 && v === `R${index}`;
+};
 const shape = (required: Shape, optional: Shape = {}): Check => v =>
   record(v) && Object.entries(required).every(([k, check]) => Object.hasOwn(v, k) && check(v[k])) &&
   Object.entries(v).every(([k, value]) => Object.hasOwn(required, k)
@@ -55,7 +60,7 @@ export const packetReference = /^packet:([^:\s]+)$/;
 const material = (v: unknown): v is string =>
   string(v) && !/\s/u.test(v) && (seatReference.test(v) || packetReference.test(v));
 const meeting = { meeting_id: string };
-const located = { ...meeting, round: oneOf(...ROUNDS), seat_id: string };
+const located = { ...meeting, round: roundId, seat_id: string };
 const sub = { ...located, body: string };
 const optionalSubmission = { supersedes: nullable(string) };
 const verbatim = oneOf('verbatim_confirm');
@@ -70,7 +75,8 @@ const checks: Record<Operation, Check> = {
   create_meeting: shape({ topic: string, chair: shape({ principal: string }, chair),
     seats: array(shape({ seat_id: seatId, principal: string, connection: seat.connection }, seat)) }, setup),
   update_setup: shape(meeting, { ...setup, chair: shape({}, chair), seats: array(shape({ seat_id: seatId }, seat)) }),
-  open_round: shape({ ...meeting, round: oneOf('R0', 'R1') }, { deadline }),
+  open_round: v => shape({ ...meeting, round: oneOf('R0', 'R1') }, { deadline })(v) ||
+    shape({ ...meeting, mention: shape({ seat_id: seatId, text: v => string(v) && !blank(v) }) }, { deadline })(v),
   submit_answer: shape(sub, { ...optionalSubmission, claims: array(shape({}, {
     statement: nullable(string), reversal_condition: nullable(string),
   })) }),
@@ -79,7 +85,7 @@ const checks: Record<Operation, Check> = {
   submit_attest: shape({ ...meeting, target_packet_id: string, method: verbatim, result: oneOf('confirmed', 'mismatch'),
     evidence: shape({ method: verbatim, confirmer: v => string(v) && v.length > 0, target_packet_id: string }) }),
   get_state: shape(meeting),
-  get_packets: shape({ ...meeting, caller_seat_id: string }, { round: oneOf(...ROUNDS),
+  get_packets: shape({ ...meeting, caller_seat_id: string }, { round: roundId,
     view: oneOf('input', 'oversight'), ack_packet_ids: strings, delivery_epoch: integer }),
   declare_absent: shape(located),
   waive_seat: shape({ ...located, reason_code: oneOf('seat_unavailable', 'quota_exceeded',
@@ -174,7 +180,7 @@ export function mergeSetup(args: SetupUpdate, old?: Setup): Setup {
     };
   }
   const quorum = args.quorum ?? old?.quorum;
-  for (const count of [quorum, ...Object.values(round_settings).map(r => r.quorum)]) {
+  for (const count of [quorum, ...Object.values(round_settings).map(r => r?.quorum)]) {
     requireArgument(count === undefined || count <= seats.length);
   }
   return {
