@@ -21,6 +21,17 @@ async function meeting(connection: 'cli' | 'web' = 'cli', quota = 4) {
   return { core, meeting_id };
 }
 
+it('uses the kernel boot ID as the system clock epoch when readable', (context) => {
+  let bootId: string;
+  try {
+    bootId = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+  } catch {
+    return context.skip();
+  }
+  expect(bootId).not.toBe('');
+  expect(systemClock.epoch).toBe(bootId);
+});
+
 describe('council core', () => {
   it('freezes both rounds, passes the gate and approves', async () => {
     const { core, meeting_id } = await meeting();
