@@ -37,7 +37,12 @@ export class HostRunner {
     private readonly getCore: () => Core,
     private readonly principal: string,
     private readonly execute = runCli,
+    private readonly cliConfigs: Partial<Record<CliSeatConfig['kind'], CliSeatConfig>> = {},
   ) {}
+
+  private cliConfig(kind: CliSeatConfig['kind']): CliSeatConfig {
+    return this.cliConfigs[kind] ?? { kind };
+  }
 
   async status(meeting_id: string) {
     const { meeting_state } = await this.getCore().get_state(this.principal, { meeting_id });
@@ -147,7 +152,7 @@ export class HostRunner {
       const prompt = mentionText === undefined ? input.prompt :
         `Direct request from the human to @${seat_id}. Answer this request:\n${mentionText}\n\n${input.prompt}`;
       try {
-        await runCliSeat({ ...assignment, prompt }, { kind }, call, this.execute);
+        await runCliSeat({ ...assignment, prompt }, this.cliConfig(kind), call, this.execute);
       } catch (error) {
         if (error instanceof Error) throw new RunnerError(`seat_driver_error: ${seat_id} failed in ${round}`);
         throw error;
@@ -176,7 +181,7 @@ export class HostRunner {
       const retry = reason ? `\nThe previous output was rejected. ${reason} Return corrected JSON only.` : '';
       let output: string;
       try {
-        output = await this.execute({ kind: 'codex' }, `${instructions}${retry}\n\n${packets}`);
+        output = await this.execute(this.cliConfig('codex'), `${instructions}${retry}\n\n${packets}`);
       } catch {
         throw new RunnerError(`chair_driver_error: the ${stage} call failed`);
       }

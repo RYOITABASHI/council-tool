@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { blank, record, requireArgument, validate } from '../core/validation.js';
 import type { runCli } from '../drivers/index.js';
+import { assertCliCommandsResolvable, resolveCliConfigs } from './cli-config.js';
 import { HostRunner, isCliSeatKind } from './host-runner.js';
 import { createMeetingViews } from './meeting-views.js';
 
@@ -66,7 +67,7 @@ export function createConfiguredHttpServer(env: NodeJS.ProcessEnv = process.env,
   if (!token?.trim()) throw new Error('COUNCIL_HTTP_TOKEN must be set');
   const expectedAuthorization = Buffer.from(`Bearer ${token}`);
   const views = createMeetingViews(env);
-  const runner = new HostRunner(views.getCore, views.principal, options.runCli);
+  const runner = new HostRunner(views.getCore, views.principal, options.runCli, resolveCliConfigs(env));
 
   const server = createServer(async (request, response) => {
     const path = request.url?.split('?', 1)[0] ?? '';
@@ -141,6 +142,7 @@ export function createConfiguredHttpServer(env: NodeJS.ProcessEnv = process.env,
 }
 
 async function main() {
+  assertCliCommandsResolvable(process.env, resolveCliConfigs(process.env));
   const server = createConfiguredHttpServer();
   const host = process.env.COUNCIL_HTTP_HOST || '127.0.0.1';
   const port = Number(process.env.COUNCIL_HTTP_PORT || 8790);
