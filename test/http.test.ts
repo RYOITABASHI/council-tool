@@ -476,3 +476,77 @@ test.each([undefined, ''])('refuses to start with HTTP token %j', token => {
     ...(token === undefined ? {} : { COUNCIL_HTTP_TOKEN: token }),
   })).toThrow('COUNCIL_HTTP_TOKEN must be set');
 });
+
+test('threads operator CLI overrides through seat rounds and chair steps', async () => {
+  const execute = vi.fn(async (_config: { kind: string }, prompt: string) => {
+    if (prompt.startsWith('Chair gate')) return '{"result":"pass"}';
+    if (prompt.startsWith('Chair synthesis')) return JSON.stringify(synthesis);
+    return 'A stub seat answer.';
+  });
+  const configured = createConfiguredHttpServer({
+    ...httpEnv,
+    COUNCIL_HOME: home,
+    COUNCIL_CODEX_COMMAND: 'codex_exec',
+    COUNCIL_CODEX_ARGS: '--skip-git-repo-check -',
+  }, { runCli: execute });
+
+  try {
+    const created = await getResponse<{ meeting_id: string }>('/meetings', authorization, 'POST', configured, {
+      topic: 'Should we run a pilot?', seats: [codexSeat],
+    });
+    expect(created.status).toBe(201);
+    const path = `/meetings/${created.body.meeting_id}`;
+    expect((await getResponse(`${path}/start`, authorization, 'POST', configured, {})).status).toBe(202);
+    await vi.waitFor(async () => {
+      const { body } = await getResponse(`${path}/runner`, authorization, 'GET', configured);
+      expect(body).toMatchObject({ phase: 'awaiting_approval' });
+    }, { timeout: 10_000 });
+
+    expect(execute.mock.calls.map(([, prompt]) => prompt)).toEqual(expect.arrayContaining([
+      expect.stringContaining('ラウンド: R0 / 席: reviewer'),
+      expect.stringMatching(/^Chair gate/),
+      expect.stringMatching(/^Chair synthesis/),
+    ]));
+    for (const [config] of execute.mock.calls) {
+      expect(config).toEqual({ kind: 'codex', command: 'codex_exec', args: ['--skip-git-repo-check', '-'] });
+    }
+  } finally {
+    await new Promise<void>(resolve => configured.close(() => resolve()));
+  }
+});
+
+test('threads bare CLI configs through seat rounds and chair steps', async () => {
+  const execute = vi.fn(async (_config: { kind: string }, prompt: string) => {
+    if (prompt.startsWith('Chair gate')) return '{"result":"pass"}';
+    if (prompt.startsWith('Chair synthesis')) return JSON.stringify(synthesis);
+    return 'A stub seat answer.';
+  });
+  const configured = createConfiguredHttpServer({
+    ...httpEnv,
+    COUNCIL_HOME: home,
+  }, { runCli: execute });
+
+  try {
+    const created = await getResponse<{ meeting_id: string }>('/meetings', authorization, 'POST', configured, {
+      topic: 'Should we run a pilot?', seats: [codexSeat],
+    });
+    expect(created.status).toBe(201);
+    const path = `/meetings/${created.body.meeting_id}`;
+    expect((await getResponse(`${path}/start`, authorization, 'POST', configured, {})).status).toBe(202);
+    await vi.waitFor(async () => {
+      const { body } = await getResponse(`${path}/runner`, authorization, 'GET', configured);
+      expect(body).toMatchObject({ phase: 'awaiting_approval' });
+    }, { timeout: 10_000 });
+
+    expect(execute.mock.calls.map(([, prompt]) => prompt)).toEqual(expect.arrayContaining([
+      expect.stringContaining('ラウンド: R0 / 席: reviewer'),
+      expect.stringMatching(/^Chair gate/),
+      expect.stringMatching(/^Chair synthesis/),
+    ]));
+    for (const [config] of execute.mock.calls) {
+      expect(config).toEqual({ kind: 'codex' });
+    }
+  } finally {
+    await new Promise<void>(resolve => configured.close(() => resolve()));
+  }
+});
