@@ -131,7 +131,7 @@ if ! healthy; then
             fi
         fi
         if [ "$status" -eq 0 ]; then
-            "$SCRIPT_DIR/start-facade.sh" || status=$?
+            sh "$SCRIPT_DIR/start-facade.sh" || status=$?
             restarts=$((restarts + 1))
             last_restart=$(utc_now)
         fi
