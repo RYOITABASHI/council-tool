@@ -967,14 +967,40 @@ function checkCheckpointOrder(prior: Checkpoint | undefined, next: Checkpoint): 
   }
 }
 
+let flockDialect: 'gnu' | 'toybox' | undefined;
+
 function flock(fd: number, mode: '--shared' | '--exclusive', nonblocking = false): boolean {
   // The parent keeps the inherited file description open after flock exits.
-  const options = nonblocking ? [mode, '--nonblock', '--conflict-exit-code', '75'] : [mode];
-  const lock = spawnSync('flock', [...options, '3'], { stdio: ['ignore', 'ignore', 'pipe', fd] });
-  if (lock.error) throw lock.error;
-  if (nonblocking && lock.status === 75) return false;
-  if (lock.status !== 0) throw new Error('Could not lock council store: ' + lock.stderr.toString());
-  return true;
+  const run = (dialect: 'gnu' | 'toybox') => {
+    const options = dialect === 'gnu' ? [mode] : [mode === '--shared' ? '-s' : '-x'];
+    if (nonblocking) {
+      if (dialect === 'gnu') options.push('--nonblock', '--conflict-exit-code', '75');
+      else options.push('-n');
+    }
+    const lock = spawnSync('flock', [...options, '3'], { stdio: ['ignore', 'ignore', 'pipe', fd] });
+    if (lock.error) {
+      if (flockDialect === undefined && dialect === 'gnu') flockDialect = 'gnu';
+      throw lock.error;
+    }
+    return lock;
+  };
+
+  let lock = run(flockDialect ?? 'gnu');
+  if (flockDialect === undefined) {
+    if (lock.status !== 0 && /(?:unknown|unrecognized|invalid) option/i.test(lock.stderr.toString())) {
+      flockDialect = 'toybox';
+      lock = run(flockDialect);
+    } else {
+      flockDialect = 'gnu';
+    }
+  }
+
+  if (lock.status === 0) return true;
+  if (nonblocking) {
+    if (flockDialect === 'gnu' && lock.status === 75) return false;
+    if (flockDialect === 'toybox' && lock.status === 1 && lock.stderr.length === 0) return false;
+  }
+  throw new Error('Could not lock council store: ' + lock.stderr.toString());
 }
 
 function presencePaths(directory: string, key: string) {
