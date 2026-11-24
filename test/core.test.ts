@@ -1,3 +1,4 @@
+import { guardStoreLinks, installXattrTestTransport } from './store-test-platform.js';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +7,10 @@ import { systemClock } from '../src/core/clock.js';
 import { Core } from '../src/core/index.js';
 import { FileStore } from '../src/store/index.js';
 import type { Store } from '../src/store/index.js';
+
+installXattrTestTransport();
+guardStoreLinks();
+if (process.env.COUNCIL_STORE_NO_LINK === '1') vi.setConfig({ testTimeout: 60_000 });
 
 const human = { id: 'chair-user', kind: 'human' } as const;
 const seat = 'seat-user';

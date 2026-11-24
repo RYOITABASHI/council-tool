@@ -1,3 +1,4 @@
+import { guardStoreLinks, installXattrTestTransport } from './store-test-platform.js';
 import { fork, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createHash, randomUUID } from 'node:crypto';
@@ -6,27 +7,33 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { buildSync } from 'esbuild';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { Core } from '../src/core/index.js';
 import type { Meeting, Operations, RoundRecord } from '../src/core/model.js';
 
+installXattrTestTransport();
+guardStoreLinks();
+
 // These tests wait for subprocesses and their file locks under parallel load.
-vi.setConfig({ testTimeout: 15_000 });
+const forced = process.env.COUNCIL_STORE_NO_LINK === '1';
+vi.setConfig({ testTimeout: forced ? 60_000 : 15_000 });
 
 let home: string;
 let script: string;
 let sandbox: string;
+let workerDirectory: string;
 const workers: { child: ReturnType<typeof fork>; done: Promise<unknown> }[] = [];
 
-beforeEach(() => {
-  sandbox = mkdtempSync(join(tmpdir(), 'council-presence-'));
-  home = join(sandbox, 'store');
-  script = join(sandbox, 'peer.mjs');
+beforeAll(() => {
+  workerDirectory = mkdtempSync(join(tmpdir(), 'council-presence-worker-'));
+  script = join(workerDirectory, 'peer.mjs');
   buildSync({
     stdin: { resolveDir: process.cwd(), contents: `
       import fs from 'node:fs';
       import { syncBuiltinESMExports } from 'node:module';
       import { Core } from './src/core/index.ts';
+      import { installXattrTestTransport } from './test/store-test-platform.ts';
+      installXattrTestTransport();
       const [home, epoch, skew, count, tick, startupPause] = process.argv.slice(2);
       const wall = Date.now;
       Date.now = () => wall() + Number(skew);
@@ -41,7 +48,7 @@ beforeEach(() => {
         fs.writeSync(1, 'paused');
         fs.readSync(0, Buffer.alloc(1), 0, 1, null);
       }
-      const { fsyncSync, linkSync, lstatSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } = fs;
+      const { copyFileSync, fsyncSync, linkSync, lstatSync, mkdirSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } = fs;
       fs.fsyncSync = fd => {
         if (pauseAt === 'fail-directory-sync' && fs.fstatSync(fd).isDirectory()) {
           pauseAt = undefined;
@@ -65,7 +72,7 @@ beforeEach(() => {
           pause();
         } else if (pauseAt === 'check' && /manifest\\.json\\..+\\.tmp$/.test(path)) {
           pauseAt = 'final-check';
-        } else if (pauseAt === 'written' && path.endsWith('/manifest.json')) {
+        } else if (pauseAt === 'manifest-written-sync' && path.endsWith('/manifest.json')) {
           pause();
         } else if (/\\.checkpoint\\.\\d+\\.json\\..+\\.tmp$/.test(path)) {
           if (pauseAt === 'publishing-checkpoint' || pauseAt === 'pending-revision-before-proof') pause();
@@ -80,18 +87,17 @@ beforeEach(() => {
       fs.lstatSync = (path, options) => {
         const result = lstatSync(path, options);
         if (pauseAt === 'final-check' && String(path).endsWith('/manifest.json')) pause();
-        if (pauseAt === 'finalizing-checkpoint' && String(path).includes('/.manifest-target.')) pause();
+        if (pauseAt === 'finalizing-checkpoint' && /\\/\\.manifest-target(?:-v2)?\\./.test(String(path))) pause();
         return result;
       };
-      fs.linkSync = (from, to) => {
-        linkSync(from, to);
+      function published(to) {
         if (pauseAt?.startsWith('pending-revision-') && to.endsWith('.json.pending')) {
           // Use a timestamp the test can restore exactly with Node's utimesSync.
           fs.utimesSync(to, 1000, 1000);
         }
-        if (pauseAt === 'target-linked' && to.includes('/.manifest-target.')) pause();
-        if (pauseAt === 'undo-linked' && to.includes('/.manifest-undo.')) pause();
-        if (/\\.commit-proof\\.\\d+\\.json$/.test(to)) {
+        if (pauseAt === 'target-linked' && /\\/\\.manifest-target(?:-v2)?\\./.test(to)) pause();
+        if (pauseAt === 'undo-linked' && /\\/\\.manifest-undo(?:-v2)?\\./.test(to)) pause();
+        if (/\\.commit-proof\\.\\d+\\.json$|\\.commit-seal\\.\\d+\\./.test(to)) {
           if (pauseAt === 'commit-proof') pause();
           if (pauseAt === 'fail-proof-sync') pauseAt = 'fail-directory-sync';
         }
@@ -109,6 +115,22 @@ beforeEach(() => {
         if (pauseAt === 'fail-revision-sync' && /\\/\\d+-[0-9a-f-]{36}\\.json$/.test(to)) {
           pauseAt = 'fail-directory-sync';
         }
+      }
+      fs.linkSync = (from, to) => {
+        if (process.env.COUNCIL_STORE_NO_LINK === '1' && !String(to).includes('/.link-probe-')) {
+          throw new Error('Store worker called linkSync in forced mode');
+        }
+        linkSync(from, to);
+        published(String(to));
+      };
+      fs.copyFileSync = (from, to, flags) => {
+        copyFileSync(from, to, flags);
+        published(String(to));
+      };
+      fs.mkdirSync = (path, options) => {
+        const result = mkdirSync(path, options);
+        if (String(path).includes('/.commit-seal.')) published(String(path));
+        return result;
       };
       fs.renameSync = (from, to) => {
         if (pauseAt === 'rename' && to.endsWith('/manifest.json')) pause();
@@ -122,7 +144,12 @@ beforeEach(() => {
         }
       };
       fs.writeSync = (fd, ...args) => {
-        if (pauseAt === 'rename' && fs.readlinkSync('/proc/self/fd/' + fd).endsWith('/manifest.json')) pause();
+        if (pauseAt === 'rename' || pauseAt === 'written') {
+          if (fs.readlinkSync('/proc/self/fd/' + fd).endsWith('/manifest.json')) {
+            if (pauseAt === 'rename') pause();
+            else pauseAt = 'manifest-written-sync';
+          }
+        }
         return writeSync(fd, ...args);
       };
       fs.writeFileSync = (file, data, ...options) => {
@@ -135,7 +162,7 @@ beforeEach(() => {
       };
       fs.unlinkSync = path => {
         unlinkSync(path);
-        if (pauseAt === 'unlinked' && String(path).includes('/.manifest-undo.')) pause();
+        if (pauseAt === 'unlinked' && /\\/\\.manifest-undo(?:-v2)?\\.\\d+:\\d+$/.test(String(path))) pause();
       };
       syncBuiltinESMExports();
       try {
@@ -151,6 +178,11 @@ beforeEach(() => {
         await core.sweep();
         process.on('message', async request => {
           try {
+            if (request === 'stop-while-idle') {
+              fs.writeSync(1, 'stopping ' + fs.readlinkSync('/proc/self'));
+              process.kill(process.pid, 'SIGSTOP');
+              return;
+            }
             if (request === 'sweep') {
               await core.sweep();
             } else {
@@ -173,18 +205,29 @@ beforeEach(() => {
   });
 });
 
+afterAll(() => {
+  rmSync(workerDirectory, { recursive: true, force: true });
+});
+
+beforeEach(() => {
+  sandbox = mkdtempSync(join(tmpdir(), 'council-presence-'));
+  home = join(sandbox, 'store');
+});
+
 afterEach(async () => {
   for (const { child } of workers) child.kill('SIGKILL');
   await Promise.all(workers.splice(0).map(({ done }) => done));
   rmSync(sandbox, { recursive: true, force: true });
 });
 
-function peer(epoch: string, { skew = 0, count = 0, tick = '0', root = home, maxFiles = 0, startupPause = '' } = {}) {
+function peer(epoch: string, { skew = 0, count = 0, tick = '0', root = home, maxFiles = 0, startupPause = '',
+  noLink = forced } = {}) {
   const args = [root, epoch, String(skew), String(count), tick, startupPause];
   const stdio: ['pipe', 'pipe', 'inherit', 'ipc'] = ['pipe', 'pipe', 'inherit', 'ipc'];
+  const env = { ...process.env, COUNCIL_STORE_NO_LINK: noLink ? '1' : '0' };
   const child = maxFiles
-    ? spawn('bash', ['-c', 'ulimit -n "$1" && shift && exec "$@"', 'peer', String(maxFiles), process.execPath, script, ...args], { stdio })
-    : fork(script, args, { execArgv: [], stdio });
+    ? spawn('bash', ['-c', 'ulimit -n "$1" && shift && exec "$@"', 'peer', String(maxFiles), process.execPath, script, ...args], { stdio, env })
+    : fork(script, args, { execArgv: [], stdio, env });
   const done = once(child, 'exit');
   const ready = Promise.race([
     once(child, 'message').then(([message]) => message),
@@ -196,6 +239,32 @@ function peer(epoch: string, { skew = 0, count = 0, tick = '0', root = home, max
 }
 
 const manifest = () => readFileSync(join(home, 'manifest.json'), 'utf8');
+const sealedFields = forced ? { proofScheme: 'sealed' } : {};
+
+function proofPath(generation: number): string {
+  const seal = readdirSync(home).find(name => name.startsWith(`.commit-seal.${generation}.`));
+  return seal
+    ? join(home, '.proof-attempt.' + seal.split('.').at(-1), 'proof.json')
+    : join(home, `.commit-proof.${generation}.json`);
+}
+
+it('recovers a forced writer’s interrupted v2 journal in link mode', async () => {
+  const owner = peer('a', { noLink: true });
+  expect(await owner.ready).toEqual({ ok: true });
+  await pauseCreation(owner.child, 'commit-proof');
+  const candidate = manifest();
+  const { generation, meetings, proofScheme } = JSON.parse(candidate);
+  expect(proofScheme).toBe('sealed');
+  expect(Object.keys(meetings)).toHaveLength(1);
+  expect(readdirSync(home).some(name => name.startsWith('.manifest-target-v2.'))).toBe(true);
+  expect(owner.child.kill('SIGKILL')).toBe(true);
+  expect(await owner.done).toEqual([null, 'SIGKILL']);
+  expect(await peer('a', { noLink: false }).ready).toEqual({ ok: true });
+  expect(manifest()).toBe(candidate);
+  expect(readFileSync(proofPath(generation), 'utf8')).toBe(candidate);
+  expect(JSON.parse(readFileSync(join(home, '.manifest-state'), 'utf8')).manifest).toBe(candidate);
+  expect(readdirSync(home).some(name => name.startsWith('.manifest-target-v2.'))).toBe(false);
+}, 60_000);
 
 function replaceFile(path: string, source = path) {
   const replacement = join(sandbox, 'incoming.json');
@@ -276,7 +345,7 @@ it.each([
   expect(await owner.ready).toEqual({ ok: true });
   const before = manifest();
   const resume = await pauseCreation(owner.child, pauseAt);
-  const meetings = readdirSync(home, { withFileTypes: true }).filter(entry => entry.isDirectory());
+  const meetings = readdirSync(home, { withFileTypes: true }).filter(entry => entry.isDirectory() && !entry.name.startsWith('.'));
   expect(meetings).toHaveLength(1);
   const directory = join(home, meetings[0].name);
   const pendingNames = readdirSync(directory).filter(name => name.endsWith('.json.pending'));
@@ -294,13 +363,20 @@ it.each([
     if (pauseAt === 'pending-revision-before-proof') {
       expect(manifest()).toBe(before);
       const generation = JSON.parse(before).generation + 1;
-      expect(existsSync(join(home, `.commit-proof.${generation}.json`))).toBe(false);
+      expect(existsSync(proofPath(generation))).toBe(false);
+      expect(readdirSync(home).some(name => name.startsWith(`.commit-seal.${generation}.`))).toBe(false);
     } else {
-      expect(await peer('a').ready).toEqual({ ok: false, message: expect.stringMatching(/ENOENT.*\.json\.pending/) });
+      expect(await peer('a').ready).toEqual({ ok: false, message: expect.stringMatching(forced
+        ? /meeting revision contents disagree/ : /ENOENT.*\.json\.pending/) });
       expect(existsSync(published)).toBe(false);
-      const [rejected] = readdirSync(directory).filter(name => name.startsWith(pendingNames[0] + '.'));
-      expect(rejected).toBeDefined();
-      expect(readFileSync(join(directory, rejected), 'utf8')).toBe(edited);
+      if (forced) {
+        // No verified replacement survives, so the fallback leaves the evidence in place.
+        expect(readFileSync(pending, 'utf8')).toBe(edited);
+      } else {
+        const [rejected] = readdirSync(directory).filter(name => name.startsWith(pendingNames[0] + '.'));
+        expect(rejected).toBeDefined();
+        expect(readFileSync(join(directory, rejected), 'utf8')).toBe(edited);
+      }
     }
   } else {
     expect(await resume()).toEqual({ ok: true });
@@ -319,7 +395,16 @@ it('rejects a different epoch with a fast wall clock while a peer is alive', asy
 it('retains ownership while a peer is stopped and after it resumes', async () => {
   const owner = peer('a', { count: 1 });
   expect(await owner.ready).toEqual({ ok: true });
-  expect(owner.child.kill('SIGSTOP')).toBe(true);
+  // Stop the worker between transactions so only its presence lock is held.
+  const stopping = once(owner.child.stdout!, 'data');
+  owner.child.send('stop-while-idle');
+  // The procfs mount can expose a different PID namespace than child.pid.
+  const ack = /^stopping ([0-9]+)$/.exec(String((await stopping)[0]));
+  expect(ack).not.toBeNull();
+  await expect.poll(() => {
+    const stat = readFileSync(`/proc/${ack![1]}/stat`, 'utf8');
+    return stat[stat.lastIndexOf(')') + 2];
+  }, { timeout: 5000 }).toBe('T');
   const published = manifest();
   await delay(1250);
   const foreign = peer('b');
@@ -500,7 +585,7 @@ it.each([
   const published = manifest();
   const [id, revision] = Object.entries(JSON.parse(published).meetings)[0];
   const packets = join(home, id, 'packets');
-  const [packet] = readdirSync(packets);
+  const [packet] = readdirSync(packets).filter(name => !name.startsWith('.'));
   expect(packet).toBeDefined();
   const path = {
     packet: join(packets, packet),
@@ -555,7 +640,7 @@ it.each([
     expect(manifest()).toBe(committed ? candidate : before);
     if (committed) {
       const checkpoint = join(home, `.checkpoint.${generation}.json`);
-      const proof = join(home, `.commit-proof.${generation}.json`);
+      const proof = proofPath(generation);
       expect(readFileSync(checkpoint, 'utf8')).toBe(candidate);
       expect(readFileSync(join(home, `.commit.${generation}.json`), 'utf8')).toBe(candidate);
       expect(readFileSync(proof, 'utf8')).toBe(candidate);
@@ -616,15 +701,21 @@ function convertToLegacy(legacy: string) {
   writeFileSync(path, legacy);
   unlinkSync(durablePath);
   for (const entry of readdirSync(home, { withFileTypes: true })) {
-    if (/^\.(presence|checkpoint|commit|commit-proof)\./.test(entry.name)) {
-      unlinkSync(join(home, entry.name));
+    if (/^\.(presence|checkpoint|commit|commit-proof|commit-seal|proof-attempt)\./.test(entry.name)) {
+      rmSync(join(home, entry.name), { recursive: true });
+      continue;
     }
-    if (!entry.isDirectory()) continue;
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
     const directory = join(home, entry.name);
+    const packets = join(directory, 'packets');
+    for (const name of readdirSync(packets).filter(name => /^\.packet-(receipt|stage)\./.test(name))) {
+      rmSync(join(packets, name), { recursive: true });
+    }
     for (const name of readdirSync(directory).filter(name => name.endsWith('.json'))) {
       const revision = join(directory, name);
       const state = JSON.parse(readFileSync(revision, 'utf8'));
       delete state.generation;
+      for (const packet of state.packets) delete packet.packet_digest;
       writeFileSync(revision, JSON.stringify(state));
       const legacy = join(directory, legacyName(name.slice(0, -5)) + '.json');
       if (legacy !== revision) renameSync(revision, legacy);
@@ -680,7 +771,7 @@ it('completes migration on reopen after the writer dies with an unpublished mark
 
   expect(await peer('a').ready).toEqual({ ok: true });
   const record = JSON.parse(readFileSync(durablePath, 'utf8'));
-  expect(JSON.parse(manifest())).toEqual({ ...JSON.parse(legacy), presence: record.presence.token, generation: 1 });
+  expect(JSON.parse(manifest())).toEqual({ ...JSON.parse(legacy), presence: record.presence.token, generation: 1, ...sealedFields });
   expect(readFileSync(join(home, '.checkpoint.1.json'), 'utf8')).toBe(manifest());
   expect(record.manifest).toBe(manifest());
 });
@@ -694,6 +785,12 @@ it('reopens a committed replacement after the interrupted writer dies', async ()
   for (const name of readdirSync(otherRoot).filter(name => /^\.checkpoint\.\d+\.json$/.test(name))) {
     if (!existsSync(join(home, name))) cpSync(join(otherRoot, name), join(home, name));
   }
+  if (forced) {
+    const generation = JSON.parse(published).generation;
+    const seal = readdirSync(otherRoot).find(name => name.startsWith(`.commit-seal.${generation}.`))!;
+    const attempt = '.proof-attempt.' + seal.split('.').at(-1);
+    for (const name of [seal, attempt]) cpSync(join(otherRoot, name), join(home, name), { recursive: true });
+  }
   const path = join(home, 'manifest.json');
   replaceFile(path, otherManifest);
   const inode = statSync(path, { bigint: true }).ino;
@@ -705,7 +802,7 @@ it('reopens a committed replacement after the interrupted writer dies', async ()
   expect.soft(statSync(path, { bigint: true }).ino).toBe(inode);
   expect(readFileSync(revision, 'utf8')).toBe(committed);
   const { generation } = JSON.parse(published);
-  expect(readFileSync(join(home, `.commit-proof.${generation}.json`), 'utf8')).toBe(published);
+  expect(readFileSync(proofPath(generation), 'utf8')).toBe(published);
 });
 
 it.each(['recreated staging file', 'matching old head and record', 'absent head and matching old caches'])(
@@ -763,11 +860,23 @@ it.each(['unmarked rollback', 'marked manifest with undo journal'])(
     expect(migrated.child.kill('SIGKILL')).toBe(true);
     await migrated.done;
 
+    const { presence: recordedPresence } = JSON.parse(readFileSync(durablePath, 'utf8'));
     unlinkSync(durablePath);
     rmSync(join(home, '.manifest-head'), { force: true });
     const { dev, ino } = statSync(home, { bigint: true });
     const anchor = join(home, `.presence.${dev}:${ino}`);
-    expect(statSync(anchor).ino).toBe(statSync(join(home, '.presence')).ino);
+    const canonical = join(home, '.presence');
+    if (forced) {
+      expect(statSync(anchor).ino).not.toBe(statSync(canonical).ino);
+      expect(statSync(anchor).nlink).toBe(1);
+      expect(statSync(canonical).nlink).toBe(1);
+      expect(JSON.parse(readFileSync(anchor, 'utf8'))).toEqual({
+        scheme: 'recorded', directory: `${dev}:${ino}`, inode: recordedPresence.inode,
+        token: readFileSync(canonical, 'utf8'), claim: recordedPresence.claim,
+      });
+    } else {
+      expect(statSync(anchor).ino).toBe(statSync(canonical).ino);
+    }
     if (variant === 'unmarked rollback') {
       writeFileSync(path, olderManifest);
     } else {
@@ -851,7 +960,7 @@ it('retries legacy enrollment over a short public token left by an older writer'
   expect(await peer('a').ready).toEqual({ ok: true });
   const token = readFileSync(presencePath, 'utf8');
   expect(token).toMatch(/^[0-9a-f-]{36}$/);
-  expect(JSON.parse(manifest())).toEqual({ ...JSON.parse(legacy), presence: token, generation: 1 });
+  expect(JSON.parse(manifest())).toEqual({ ...JSON.parse(legacy), presence: token, generation: 1, ...sealedFields });
 });
 
 it.each([
@@ -868,7 +977,7 @@ it.each([
   expect(await peer('a').ready).toEqual({ ok: true });
   const published = manifest();
   const record = JSON.parse(readFileSync(durablePath, 'utf8'));
-  expect(JSON.parse(published)).toEqual({ ...JSON.parse(legacy), presence: record.presence.token, generation: 1 });
+  expect(JSON.parse(published)).toEqual({ ...JSON.parse(legacy), presence: record.presence.token, generation: 1, ...sealedFields });
   expect(record.manifest).toBe(published);
   expect(existsSync(join(home, '.manifest-enrollment'))).toBe(false);
 });
@@ -2094,7 +2203,7 @@ it.each(['unmarked', 'durable record', 'durable record and head digest'])(
       const published = manifest();
       expect(JSON.parse(published)).toMatchObject({ ...JSON.parse(fixture.legacy), generation: 1 });
       expect(JSON.parse(readFileSync(fixture.durablePath, 'utf8')).manifest).toBe(published);
-      expect(readFileSync(join(home, '.commit-proof.1.json'), 'utf8')).toBe(published);
+      expect(readFileSync(proofPath(1), 'utf8')).toBe(published);
       expect(await reader.get_packets('seat-a', {
         ...args, delivery_epoch: deliveryEpoch, ack_packet_ids: [agendaId],
       })).toMatchObject({ new_packets: [] });
@@ -2742,7 +2851,7 @@ it('refuses to migrate a legacy checkpoint-only rollback when the old publicatio
   writeFileSync(path, published);
   writeFileSync(durablePath, record(published));
   expect(await peer('b').ready).toEqual({ ok: true });
-  expect(JSON.parse(manifest())).toEqual({ ...JSON.parse(published), generation: 1 });
+  expect(JSON.parse(manifest())).toEqual({ ...JSON.parse(published), generation: 1, ...sealedFields });
 });
 
 it('reopens a copied legacy store after its first cache rename fails to sync', async () => {
@@ -2755,7 +2864,7 @@ it('reopens a copied legacy store after its first cache rename fails to sync', a
   });
   expect(await peer('a', { root: copy }).ready).toEqual({ ok: true });
   const published = readFileSync(join(copy, 'manifest.json'), 'utf8');
-  expect(JSON.parse(published)).toEqual({ ...marked, generation: 1 });
+  expect(JSON.parse(published)).toEqual({ ...marked, generation: 1, ...sealedFields });
   expect(readFileSync(join(copy, '.checkpoint.1.json'), 'utf8')).toBe(published);
 });
 
@@ -2766,7 +2875,7 @@ it('loads all meetings without holding their files open together', async () => {
   expect(Object.keys(JSON.parse(published).meetings)).toHaveLength(20);
   expect(await peer('a', { maxFiles: 64 }).ready).toEqual({ ok: true });
   expect(manifest()).toBe(published);
-}, 15_000);
+}, forced ? 90_000 : 15_000);
 
 it('keeps all 40 same-epoch meetings and sweeps their deadlines', async () => {
   const peers = Array.from({ length: 4 }, () => peer('a', { count: 10 }));
@@ -2782,4 +2891,4 @@ it('keeps all 40 same-epoch meetings and sweeps their deadlines', async () => {
   expect(await peer('a', { tick: '10000000001' }).ready).toEqual({ ok: true });
   expect(Object.entries(JSON.parse(manifest()).meetings).map(entry => readMeeting(entry).rounds[0].rows[0].state))
     .toEqual(Array(40).fill('absent'));
-}, 30_000);
+}, forced ? 240_000 : 30_000);

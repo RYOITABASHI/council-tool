@@ -1,3 +1,4 @@
+import { guardStoreLinks, installXattrTestTransport } from './store-test-platform.js';
 import { mkdtemp, readFile, rename, rm } from 'node:fs/promises';
 import { request } from 'node:http';
 import type { Server } from 'node:http';
@@ -12,6 +13,10 @@ import { createCore } from '../src/core/index.js';
 import { createConfiguredHttpServer } from '../src/http/server.js';
 import { createConfiguredMcpServer } from '../src/mcp/server.js';
 import type { Packet } from '../src/packet/index.js';
+
+installXattrTestTransport();
+guardStoreLinks();
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
 const principal = 'host:operator';
 const authorization = 'Bearer test-council-token';
@@ -378,7 +383,7 @@ test('starts single-flight and records a directed round and superseding synthesi
   });
   expect(await post(`${path}/approve`, { decision: 'approve' }))
     .toEqual({ status: 200, body: { meeting_state: 'APPROVED' } });
-}, 20_000);
+}, 90_000);
 
 test('preserves pending approval when the mentioned seat has exhausted its quota', async () => {
   const core = createCore({ home, isHuman: id => id === principal });

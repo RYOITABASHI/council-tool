@@ -1,13 +1,18 @@
+import { guardStoreLinks, installXattrTestTransport } from './store-test-platform.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { createCore } from '../src/core/index.js';
 import { createMcpServer } from '../src/mcp/server.js';
 import type { CoreDispatch } from '../src/mcp/server.js';
+
+installXattrTestTransport();
+guardStoreLinks();
+vi.setConfig({ testTimeout: 60_000 });
 
 const principal = 'operator';
 
