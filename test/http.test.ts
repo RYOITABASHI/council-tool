@@ -253,14 +253,14 @@ async function waitForPhase(path: string, phase: string) {
   return vi.waitFor(async () => {
     const response = await getResponse<{ detail: string | null }>(`${path}/runner`, authorization);
     expect(response).toEqual({
-      status: 200, body: { phase, detail: phase === 'error' ? expect.any(String) : null, updated_at: expect.any(String) },
+      status: 200, body: { phase, detail: phase === 'interrupted' ? expect.any(String) : null, updated_at: expect.any(String) },
     });
     return response.body;
   }, { timeout: 10_000 });
 }
 
 test.each([undefined, 'Bearer wrong-token'])('requires Bearer auth for every POST with token %j', async token => {
-  for (const path of ['/meetings', ...['start', 'mention', 'approve'].map(route => `/meetings/${meetingId}/${route}`)]) {
+  for (const path of ['/meetings', ...['start', 'resume', 'mention', 'approve'].map(route => `/meetings/${meetingId}/${route}`)]) {
     expect(await getResponse(path, token, 'POST', undefined, {}))
       .toEqual({ status: 401, body: { code: 'unauthorized' } });
   }
@@ -337,6 +337,8 @@ test('starts single-flight and records a directed round and superseding synthesi
       { status: 409, body: { code: 'runner_active' } },
     ]));
     expect((await get(`${path}/state`)).body).toMatchObject({ meeting_state: 'OPEN' });
+    expect(await getResponse(`${path}/resume`, authorization, 'POST'))
+      .toEqual({ status: 409, body: { code: 'runner_active' } });
     expect(await post(`${path}/mention`, { seat_id: 'observer', text: 'Too soon' }))
       .toEqual({ status: 409, body: { code: 'runner_active' } });
   } finally {
@@ -458,7 +460,7 @@ test('a chair gate can open R2 for a designated dispute', async () => {
   });
 });
 
-test.each(['gate', 'synthesis'])('retries malformed chair %s once and records the error', async stage => {
+test.each(['gate', 'synthesis'])('retries malformed chair %s once and reports the interruption', async stage => {
   const prefix = `Chair ${stage}`;
   const malformed = stage === 'gate' ? '{"result":"fail"}' : JSON.stringify({ ...synthesis, missing_records: [false] });
   runCli.mockReset().mockImplementation(async (_config, prompt) => {
@@ -468,7 +470,7 @@ test.each(['gate', 'synthesis'])('retries malformed chair %s once and records th
   });
   const path = await createMeeting();
   expect((await post(`${path}/start`)).status).toBe(202);
-  expect((await waitForPhase(path, 'error')).detail).toContain(`invalid_chair_${stage}`);
+  expect((await waitForPhase(path, 'interrupted')).detail).toContain(`invalid_chair_${stage}`);
   expect(runCli.mock.calls.filter(([, prompt]) => prompt.startsWith(prefix))).toHaveLength(2);
   expect((await getPackets(path)).body.new_packets).not.toEqual(expect.arrayContaining([
     expect.objectContaining({ packet: expect.objectContaining({ header: expect.objectContaining({ kind: 'synthesis' }) }) }),
@@ -552,6 +554,106 @@ test('threads bare CLI configs through seat rounds and chair steps', async () =>
       expect(config).toEqual({ kind: 'codex' });
     }
   } finally {
+    await new Promise<void>(resolve => configured.close(() => resolve()));
+  }
+});
+
+test.each(['CREATED', 'AWAITING_APPROVAL', 'APPROVED', 'REJECTED'])('resume rejects %s', async meeting_state => {
+  const core = createCore({ home, isHuman: id => id === principal });
+  let id: string;
+  try {
+    ({ meeting_id: id } = await core.create_meeting(principal, {
+      topic: 'Resume conflict', chair: { principal },
+      seats: [{ seat_id: 'a', principal, connection: 'cli', role: 'codex-cli' }],
+    }));
+    if (meeting_state !== 'CREATED') {
+      for (const round of ['R0', 'R1']) {
+        await core.open_round(principal, { meeting_id: id, round });
+        await core.submit_answer(principal, { meeting_id: id, round, seat_id: 'a', body: 'Answer' });
+      }
+      await core.chair_gate(principal, { meeting_id: id, result: 'pass' });
+      await core.synthesize(principal, { meeting_id: id, body: synthesis });
+      if (meeting_state === 'APPROVED' || meeting_state === 'REJECTED') {
+        await core.approve(principal, { meeting_id: id, decision: meeting_state === 'APPROVED' ? 'approve' : 'reject' });
+      }
+    }
+  } finally {
+    core.close();
+  }
+  expect(await getResponse(`/meetings/${id}/resume`, authorization, 'POST')).toEqual({
+    status: 409, body: { code: 'invalid_state', detail: { meeting_state } },
+  });
+});
+
+test('resume uses the same masked response as a state read for an unknown meeting', async () => {
+  const path = `/meetings/${unknownMeeting}`;
+  const masked = await get(`${path}/state`);
+  expect(masked.status).toBe(404);
+  expect(await getResponse(`${path}/resume`, authorization, 'POST')).toEqual(masked);
+});
+
+test('resume validates pending bindings before invoking any driver', async () => {
+  const core = createCore({ home, isHuman: id => id === principal });
+  let id: string;
+  try {
+    ({ meeting_id: id } = await core.create_meeting(principal, {
+      topic: 'Driver validation', chair: { principal },
+      seats: [
+        { seat_id: 'supported', principal, connection: 'cli', role: 'codex-cli' },
+        { seat_id: 'unsupported', principal, connection: 'api' },
+      ],
+    }));
+    await core.open_round(principal, { meeting_id: id, round: 'R0' });
+  } finally {
+    core.close();
+  }
+  runCli.mockClear();
+  const path = `/meetings/${id}`;
+  expect(await get(`${path}/runner`)).toMatchObject({ status: 200, body: { phase: 'interrupted' } });
+  expect(await getResponse(`${path}/resume`, authorization, 'POST')).toEqual({
+    status: 422, body: { code: 'seat_kind_unavailable' },
+  });
+  expect(runCli).not.toHaveBeenCalled();
+});
+
+test('startup reconciliation keeps a stranded meeting ready to resume over HTTP', async () => {
+  const path = await createMeeting();
+  const core = createCore({ home, isHuman: id => id === principal });
+  try {
+    await core.open_round(principal, { meeting_id: path.split('/').at(-1), round: 'R0' });
+  } finally {
+    core.close();
+  }
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const execute = vi.fn(async (_config, prompt: string) => {
+    if (prompt.includes('ラウンド: R0 / 席: reviewer')) await blocked;
+    if (prompt.startsWith('Chair gate')) return '{"result":"pass"}';
+    if (prompt.startsWith('Chair synthesis')) return JSON.stringify(synthesis);
+    return 'A stub seat answer.';
+  });
+  const configured = createConfiguredHttpServer({ ...httpEnv, COUNCIL_HOME: home }, { runCli: execute });
+  const readRunner = () => getResponse(`${path}/runner`, authorization, 'GET', configured);
+  try {
+    await configured.reconcile();
+    expect(execute).not.toHaveBeenCalled();
+    expect(await readRunner()).toMatchObject({ status: 200, body: { phase: 'interrupted' } });
+    expect(await getResponse(`${path}/resume`, authorization, 'POST', configured)).toEqual({
+      status: 202, body: { runner: { phase: 'running' } },
+    });
+    const running = await readRunner();
+    expect(running.body).toMatchObject({ phase: 'running' });
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
+    const attempts = execute.mock.calls.length;
+    await configured.reconcile();
+    expect(execute.mock.calls.length).toBe(attempts);
+    expect(await readRunner()).toEqual(running);
+    release();
+    await vi.waitFor(async () => {
+      expect(await readRunner()).toMatchObject({ status: 200, body: { phase: 'awaiting_approval' } });
+    }, { timeout: 10_000 });
+  } finally {
+    release();
     await new Promise<void>(resolve => configured.close(() => resolve()));
   }
 });

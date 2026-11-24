@@ -90,7 +90,7 @@ export function createConfiguredHttpServer(env: NodeJS.ProcessEnv = process.env,
           return sendJson(response, 201, { meeting_id });
         }
       }
-      const route = /^\/meetings\/([^/]+)\/(state|packets|runner|start|mention|approve)$/.exec(path);
+      const route = /^\/meetings\/([^/]+)\/(state|packets|runner|start|resume|mention|approve)$/.exec(path);
       if (!route) return sendJson(response, 404, { code: 'not_found' });
 
       let meetingId: string;
@@ -108,9 +108,9 @@ export function createConfiguredHttpServer(env: NodeJS.ProcessEnv = process.env,
         if (action === 'runner') return sendJson(response, 200, await runner.status(meetingId));
       }
       if (request.method === 'POST') {
-        if (action === 'start') {
+        if (action === 'start' || action === 'resume') {
           requireArgument(Object.keys(await readJson(request, true)).length === 0);
-          const { phase } = await runner.start(meetingId);
+          const { phase } = await runner[action](meetingId);
           return sendJson(response, 202, { runner: { phase } });
         }
         if (action === 'mention') {
@@ -138,7 +138,9 @@ export function createConfiguredHttpServer(env: NodeJS.ProcessEnv = process.env,
     }
   });
   server.once('close', views.close);
-  return server;
+  return Object.assign(server, {
+    reconcile: () => runner.reconcile(views.list().map(({ meeting_id }) => meeting_id)),
+  });
 }
 
 async function main() {
@@ -147,6 +149,7 @@ async function main() {
   const host = process.env.COUNCIL_HTTP_HOST || '127.0.0.1';
   const port = Number(process.env.COUNCIL_HTTP_PORT || 8790);
   try {
+    await server.reconcile();
     server.listen(port, host);
     await once(server, 'listening');
   } catch (error) {
