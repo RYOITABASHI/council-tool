@@ -6,6 +6,7 @@ const wantsXattr = (command: string) => command === '/bin/getfattr' || command =
 const pythonXattr = `
 import errno, os, re, sys
 tool = 'getfattr' if sys.argv[1] == 'get' else 'setfattr'
+dialect = sys.argv[-1]
 try:
     if sys.argv[1] == 'get':
         sys.stdout.buffer.write(os.getxattr(3, sys.argv[2]))
@@ -21,6 +22,9 @@ try:
             data = value.encode()
         os.setxattr(3, sys.argv[2], data)
 except OSError as error:
+    if error.errno == errno.ENODATA and sys.argv[1] == 'get' and dialect == 'toybox':
+        # Toybox getfattr: a missing attribute is a silent success.
+        sys.exit(0)
     if error.errno == errno.ENODATA:
         sys.stderr.write('getfattr: /proc/self/fd/3: user.council_store_identity: No such attribute\\n')
     else:
@@ -42,8 +46,9 @@ export function installXattrTestTransport(): void {
         !Array.isArray(options.stdio) || typeof options.stdio[3] !== 'number') {
       throw new Error('Malformed fd-3 xattr invocation');
     }
+    const dialect = process.env.COUNCIL_TEST_XATTR_DIALECT === 'gnu' ? 'gnu' : 'toybox';
     return spawn('/usr/bin/python3', ['-S', '-c', pythonXattr, read ? 'get' : 'set',
-      'user.council_store_identity', ...(read ? [] : [args[3]!] )], options);
+      'user.council_store_identity', ...(read ? [] : [args[3]!]), dialect], options);
   }) as typeof spawn;
   syncBuiltinESMExports();
 }

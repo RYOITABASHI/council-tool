@@ -177,22 +177,64 @@ export function copyExclusive(source: string, expected: EntryIdentity, destinati
   }
 }
 
-export function identityNonce(fd: number, check: () => void, install?: string): string | undefined {
+function spawnNonceTool(fd: number, check: () => void, install?: string) {
   const args = install === undefined ? ['--only-values', '-n', nonceAttribute] : ['-n', nonceAttribute, '-v', install];
-  const operation = install === undefined ? 'read' : 'install';
   check();
   const result = spawnSync(install === undefined ? '/bin/getfattr' : '/bin/setfattr',
     [...args, '--', descriptorPath(3)],
     { stdio: ['ignore', 'pipe', 'pipe', fd], env: { ...process.env, LC_ALL: 'C' }, encoding: 'utf8' });
   check();
+  return result;
+}
+
+type NonceResult = ReturnType<typeof spawnNonceTool>;
+
+// getfattr dialects disagree on how a missing attribute is reported: GNU
+// exits 1 with a "No such attribute" diagnostic, Toybox (Android) exits 0
+// with empty output. The Toybox form is indistinguishable from an anomalous
+// empty read, so it is only trusted after the fallback self-probe has
+// classified this host's dialect from a known-absent attribute; until then
+// the strict GNU interpretation applies.
+type NonceDialect = 'gnu' | 'toybox';
+let nonceDialect: NonceDialect | undefined;
+const gnuAbsentNonce = (result: NonceResult) => !result.error && !result.signal && result.status === 1 &&
+  /^(?:getfattr: )?\/proc\/self\/fd\/3: (?:user\.council_store_identity: )?No such attribute\n?$/.test(result.stderr ?? '') &&
+  result.stdout === '';
+const toyboxAbsentNonce = (result: NonceResult) => !result.error && !result.signal && result.status === 0 &&
+  result.stdout === '' && (result.stderr ?? '') === '';
+
+function nonceUnavailable(operation: string, result: NonceResult): Error {
+  return new Error('Council store xattr ' + operation + ' unavailable: ' +
+    (result.error?.message ?? (result.stderr ?? '').trim()));
+}
+
+function detectNonceDialect(fd: number, check: () => void): void {
+  if (nonceDialect !== undefined) return;
+  const result = spawnNonceTool(fd, check);
+  const stderr = result.stderr ?? '';
+  if ((result.error && errno(result.error) === 'ENOENT') ||
+      /(?:Operation not supported|ENOTSUP|EOPNOTSUPP)\s*$/.test(stderr)) throw nonceUnavailable('read', result);
+  if (gnuAbsentNonce(result)) { nonceDialect = 'gnu'; return; }
+  if (toyboxAbsentNonce(result)) { nonceDialect = 'toybox'; return; }
+  throw new Error('Council store xattr probe could not classify the missing-attribute response: ' +
+    (stderr.trim() || result.signal || String(result.status)));
+}
+
+// Test support: simulated hosts switch dialects within one process.
+export function resetNonceDialect(): void {
+  nonceDialect = undefined;
+}
+
+export function identityNonce(fd: number, check: () => void, install?: string): string | undefined {
+  const operation = install === undefined ? 'read' : 'install';
+  const result = spawnNonceTool(fd, check, install);
   const stderr = result.stderr ?? '';
   if ((result.error && errno(result.error) === 'ENOENT') ||
       /(?:Operation not supported|ENOTSUP|EOPNOTSUPP)\s*$/.test(stderr)) {
-    throw new Error('Council store xattr ' + operation + ' unavailable: ' + (result.error?.message ?? stderr.trim()));
+    throw nonceUnavailable(operation, result);
   }
-  if (!result.error && !result.signal && result.status === 1 && install === undefined &&
-      /^(?:getfattr: )?\/proc\/self\/fd\/3: (?:user\.council_store_identity: )?No such attribute\n?$/.test(stderr) &&
-      result.stdout === '') return undefined;
+  if (install === undefined && gnuAbsentNonce(result)) return undefined;
+  if (install === undefined && nonceDialect === 'toybox' && toyboxAbsentNonce(result)) return undefined;
   if (result.error || result.signal || result.status !== 0) {
     throw new Error('Council store xattr ' + operation + ' failed: ' +
       (result.error?.message ?? (stderr.trim() || result.signal || String(result.status))));
@@ -238,6 +280,7 @@ function probeCopyCapability(dirFd: number, checkDirectory: () => void): void {
         verifiedFile(fd, path, identity, bytes);
       };
       try {
+        detectNonceDialect(fd, () => check(copy));
         identityNonce(fd, () => check(copy), nonce);
         fsyncSync(fd);
         renameSync(copy, renamed);

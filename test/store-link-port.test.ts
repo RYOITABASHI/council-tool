@@ -42,6 +42,9 @@ afterEach(() => {
   childProcess.spawnSync = originalSpawn;
   syncBuiltinESMExports();
   vi.unstubAllEnvs();
+  // Each test simulates a fresh host process: the getfattr dialect is
+  // host state, classified once per process by the self-probe.
+  primitives.resetNonceDialect();
   fs.closeSync(fd);
   fs.rmSync(home, { recursive: true, force: true });
 });
@@ -73,6 +76,22 @@ it('bypasses a successful link capability cache when forced', () => {
   syncBuiltinESMExports();
   new FileStore(home, clock).transaction(() => {});
   expect(binding().scheme).toBe('recorded');
+});
+
+it.each(['toybox', 'gnu'])('installs the presence claim under %s getfattr semantics', dialect => {
+  // Toybox getfattr reports a missing attribute as exit 0 with empty output;
+  // GNU getfattr exits 1 with a "No such attribute" diagnostic. The on-device
+  // regression: the Toybox form was classified as a malformed nonce and the
+  // first store transaction on the Fold always failed.
+  vi.stubEnv('COUNCIL_TEST_XATTR_DIALECT', dialect);
+  primitives.resetNonceDialect();
+  const root = fs.mkdtempSync(join(tmpdir(), 'council-xattr-dialect-'));
+  try {
+    forcedStore(root).transaction(() => {});
+    expect(binding(root).scheme).toBe('recorded');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
@@ -730,7 +749,8 @@ it('fails closed on a legacy packet with unexplained bytes', () => {
 });
 
 const spawnCuts = [
-  ['probe set', '.copy-probe-', 1, 0], ['probe get', '.copy-probe-', 2, 0],
+  ['probe classify', '.copy-probe-', 1, 0], ['probe set', '.copy-probe-', 2, 0],
+  ['probe get', '.copy-probe-', 3, 0],
   ['presence get', '/.presence', 1, 0], ['presence set', '/.presence', 2, 0],
   ['presence readback', '/.presence', 3, 0], ['presence enrollment check', '/.presence', 4, 0],
   ['presence registration check', '/.presence', 5, 0],
@@ -774,6 +794,12 @@ it('reports the missing xattr executable before publishing any fallback artifact
 });
 
 it('does not reuse empty or malformed nonce output as an absent attribute', () => {
+  // Under the GNU dialect an empty successful read is anomalous (absence is
+  // exit 1 with a diagnostic) and must stay malformed. The Toybox dialect —
+  // where empty success IS the absence signal — is covered by the dialect
+  // test above and is only trusted after the self-probe classifies the host.
+  vi.stubEnv('COUNCIL_TEST_XATTR_DIALECT', 'gnu');
+  primitives.resetNonceDialect();
   childProcess.spawnSync = ((command: string, args: string[], options: childProcess.SpawnSyncOptions) => {
     if (command === '/bin/getfattr') {
       const path = fs.readlinkSync('/proc/self/fd/' + (options.stdio as number[])[3]);
