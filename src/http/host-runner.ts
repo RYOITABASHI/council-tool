@@ -2,7 +2,7 @@ import type { Core } from '../core/index.js';
 import { ERROR_CODES } from '../core/types.js';
 import type { MeetingState, Round } from '../core/types.js';
 import { record } from '../core/validation.js';
-import { getSeatInput, runCli, runCliSeat } from '../drivers/index.js';
+import { CliExecutionError, getSeatInput, runCli, runCliSeat } from '../drivers/index.js';
 import type { CliSeatConfig, ToolCaller } from '../drivers/index.js';
 import { gateArgs, gateInstructions, synthesisArgs, synthesisInstructions } from './chair-output.js';
 
@@ -242,6 +242,21 @@ export class HostRunner {
       try {
         await runCliSeat({ ...assignment, prompt }, this.cliConfig(kind), submit, this.execute);
       } catch (error) {
+        if (error instanceof CliExecutionError) {
+          const failed = await state();
+          if (!frozen(failed) && pending(failed, seat_id)) {
+            const waiver = {
+              ...assignment, reason_code: error.disposition, reason_note: error.message.slice(0, 200),
+            };
+            try {
+              await core.waive_seat(this.principal, waiver);
+            } catch (waiveError) {
+              if (!record(waiveError) || waiveError.code !== 'invalid_state') throw waiveError;
+              if (frozen(await state())) break;
+            }
+          }
+          continue;
+        }
         if (error instanceof Error) throw new RunnerError(`seat_driver_error: ${seat_id} failed in ${round}`);
         throw error;
       }
@@ -269,7 +284,10 @@ export class HostRunner {
       let output: string;
       try {
         output = await this.execute(this.cliConfig('codex'), `${instructions}${retry}\n\n${packets}`);
-      } catch {
+      } catch (error) {
+        if (error instanceof CliExecutionError) {
+          throw new RunnerError(`chair_driver_error: the ${stage} call failed (${error.disposition}: ${error.message})`);
+        }
         throw new RunnerError(`chair_driver_error: the ${stage} call failed`);
       }
       let args: Input;

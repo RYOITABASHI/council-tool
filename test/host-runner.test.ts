@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, test, vi } from 'vitest';
 import { createCore } from '../src/core/index.js';
-import { getSeatInput } from '../src/drivers/index.js';
+import { CliExecutionError, getSeatInput } from '../src/drivers/index.js';
 import { HostRunner } from '../src/http/host-runner.js';
 import type { Round } from '../src/core/types.js';
 import { guardStoreLinks, installXattrTestTransport } from './store-test-platform.js';
@@ -313,4 +313,104 @@ test('commits the input receipt with the answer even if the runner stops before 
   const input = await getSeatInput({ meeting_id, round: 'R0', seat_id: 'optional' },
     (op, args) => reopened.dispatch(op, args, principal));
   expect(input.packets.map(({ header }) => header.kind)).toEqual(['answer']);
+});
+
+test.each(['execution_timeout', 'unparseable_output'] as const)('waives a mandatory seat for %s', async disposition => {
+  const p = await pipeline();
+  const healthy = p.execute.getMockImplementation()!;
+  p.execute.mockImplementation(async (config, prompt) => {
+    if (!prompt.includes('ラウンド: R0 / 席: a\n')) return healthy(config, prompt);
+    if (disposition === 'execution_timeout') throw new CliExecutionError(disposition, 'x'.repeat(250));
+    return '{"body":';
+  });
+  const runner = p.fresh();
+  await runner.start(p.meeting_id);
+  await vi.waitFor(async () => expect(await runner.status(p.meeting_id)).toMatchObject({
+    phase: 'awaiting_approval',
+  }));
+  const snapshot = await p.snapshot();
+  expect(snapshot.meeting_state).toBe('AWAITING_APPROVAL');
+  expect(snapshot.round_states).toContainEqual(expect.objectContaining({ round: 'R0', phase: 'frozen' }));
+  expect(snapshot.reception_table).toContainEqual(expect.objectContaining({
+    round: 'R0', seat_id: 'a', state: 'waived',
+    reason: disposition === 'execution_timeout' ? { code: disposition, text: 'x'.repeat(200) } :
+      expect.objectContaining({ code: disposition }),
+  }));
+  expect((await p.packets()).map(packet => packet.header)).not.toContainEqual(expect.objectContaining({
+    kind: 'answer', round: 'R0', seat_id: 'a',
+  }));
+});
+
+test('tolerates an invalid_state race on the disposition waiver and completes after resume', async () => {
+  const p = await pipeline();
+  const healthy = p.execute.getMockImplementation()!;
+  p.execute.mockImplementation(async (config, prompt) => {
+    if (!prompt.includes('ラウンド: R0 / 席: a\n')) return healthy(config, prompt);
+    throw new CliExecutionError('execution_timeout', 'Timed out');
+  });
+  // Simulate the seat being resolved between the runner's state read and its
+  // waiver: the first waive_seat for seat a in R0 reports invalid_state
+  // without applying anything; later calls delegate to the real core.
+  const realWaive = p.core.waive_seat;
+  let waiveAttempts = 0;
+  vi.spyOn(p.core, 'waive_seat').mockImplementation(async (principalArg, args) => {
+    const a = args as { round?: string; seat_id?: string };
+    if (a.round === 'R0' && a.seat_id === 'a') {
+      waiveAttempts += 1;
+      if (waiveAttempts === 1) throw { code: 'invalid_state' };
+    }
+    return realWaive(principalArg, args);
+  });
+  const runner = p.fresh();
+  await runner.start(p.meeting_id);
+  await vi.waitFor(async () => expect(await runner.status(p.meeting_id)).toMatchObject({
+    phase: 'interrupted', detail: expect.stringContaining('barrier_not_reached'),
+  }));
+  expect(waiveAttempts).toBe(1);
+  const midway = await p.snapshot();
+  expect(midway.round_states).toContainEqual(expect.objectContaining({ round: 'R0', phase: 'open' }));
+  expect(midway.reception_table).toContainEqual(expect.objectContaining({
+    round: 'R0', seat_id: 'a', state: 'pending',
+  }));
+  // The swallowed invalid_state must not abort the round pass: seats ordered
+  // after 'a' were still executed in the same pass.
+  expect(midway.reception_table).toContainEqual(expect.objectContaining({
+    round: 'R0', seat_id: 'b', state: 'received',
+  }));
+  expect(midway.reception_table).toContainEqual(expect.objectContaining({
+    round: 'R0', seat_id: 'optional', state: 'received',
+  }));
+  await runner.resume(p.meeting_id);
+  await vi.waitFor(async () => expect(await runner.status(p.meeting_id)).toMatchObject({
+    phase: 'awaiting_approval', detail: null,
+  }));
+  expect(waiveAttempts).toBe(2);
+  const snapshot = await p.snapshot();
+  expect(snapshot.meeting_state).toBe('AWAITING_APPROVAL');
+  expect(snapshot.round_states).toContainEqual(expect.objectContaining({ round: 'R0', phase: 'frozen' }));
+  expect(snapshot.reception_table).toContainEqual(expect.objectContaining({
+    round: 'R0', seat_id: 'a', state: 'waived',
+    reason: expect.objectContaining({ code: 'execution_timeout' }),
+  }));
+});
+
+test('reports a chair gate timeout as interrupted and resumes', async () => {
+  const p = await pipeline();
+  const healthy = p.execute.getMockImplementation()!;
+  p.execute.mockImplementation(async (config, prompt) => {
+    if (prompt.startsWith('Chair gate')) throw new CliExecutionError('execution_timeout', 'Timed out');
+    return healthy(config, prompt);
+  });
+  const runner = p.fresh();
+  await runner.start(p.meeting_id);
+  await vi.waitFor(async () => expect(await runner.status(p.meeting_id)).toMatchObject({
+    phase: 'interrupted',
+    detail: expect.stringContaining('chair_driver_error: the gate call failed (execution_timeout: Timed out)'),
+  }));
+  p.execute.mockImplementation(healthy);
+  await runner.resume(p.meeting_id);
+  await vi.waitFor(async () => expect(await runner.status(p.meeting_id)).toMatchObject({
+    phase: 'awaiting_approval', detail: null,
+  }));
+  expect((await p.snapshot()).meeting_state).toBe('AWAITING_APPROVAL');
 });

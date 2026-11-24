@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { expect, test } from 'vitest';
-import { assertCliCommandsResolvable, resolveCliConfigs } from '../src/http/cli-config.js';
+import { assertCliCommandsResolvable, resolveCliConfigs, resolveExecutionBounds } from '../src/http/cli-config.js';
 
 const bareConfigs = {
   codex: { kind: 'codex' },
@@ -74,3 +74,28 @@ test('checks a command with a slash directly and rejects directories', () => {
   const directoryEnv = { COUNCIL_CODEX_COMMAND: dirname(process.execPath) };
   expect(() => assertCliCommandsResolvable(directoryEnv, resolveCliConfigs(directoryEnv))).toThrow();
 });
+
+test('applies execution bounds to both CLI kinds', () => {
+  expect(resolveCliConfigs({
+    COUNCIL_EXECUTION_TIMEOUT_MS: '2500',
+    COUNCIL_EXECUTION_OUTPUT_LIMIT_BYTES: '2048',
+  })).toEqual({
+    codex: { kind: 'codex', timeoutMs: 2500, outputLimitBytes: 2048 },
+    claude: { kind: 'claude', timeoutMs: 2500, outputLimitBytes: 2048 },
+  });
+});
+
+test('defaults execution bounds and omits blank overrides', () => {
+  expect(resolveExecutionBounds({})).toEqual({ timeoutMs: 600000, outputLimitBytes: 4194304 });
+  expect(resolveCliConfigs({
+    COUNCIL_EXECUTION_TIMEOUT_MS: ' ',
+    COUNCIL_EXECUTION_OUTPUT_LIMIT_BYTES: '',
+  })).toEqual(bareConfigs);
+});
+
+test.each(['COUNCIL_EXECUTION_TIMEOUT_MS', 'COUNCIL_EXECUTION_OUTPUT_LIMIT_BYTES']
+  .flatMap(name => ['abc', '0', '-5', '1.5', '9007199254740993'].map(value => [name, value] as const)))(
+  'rejects invalid %s value %s', (name, value) => {
+    expect(() => resolveCliConfigs({ [name]: value })).toThrow(`${name} must be a positive integer: "${value}"`);
+  },
+);
