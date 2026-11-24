@@ -1,15 +1,19 @@
-import { router, Stack, useFocusEffect, useIsFocused, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect, useIsFocused, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Platform, Pressable, RefreshControl,
   ScrollView, SectionList, StyleSheet, Text, TextInput, View,
 } from 'react-native';
+import type { TextInputSelectionChangeEvent } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { describeFacadeError, FacadeError, fetchMeeting, fetchRunner, postApprove, postMention } from '../api';
+import { AgendaAnnouncement } from '../components/AgendaAnnouncement';
 import { AttestRow } from '../components/AttestRow';
+import { ChatHeader, HeaderIcon } from '../components/ChatHeader';
 import { GateCard } from '../components/GateCard';
 import { PacketBubble } from '../components/PacketBubble';
 import { RoundHeader } from '../components/RoundHeader';
+import { SeatAvatar } from '../components/SeatAvatar';
 import { StateBanner } from '../components/StateBanner';
 import { SynthesisCard } from '../components/SynthesisCard';
 import { useTheme } from '../components/styles';
@@ -18,7 +22,8 @@ import { buildTimeline, receptionRowsForRound, supersededInfo, topicOf } from '.
 import type { TimelineItem } from '../model';
 import { loadSettings, saveSettings } from '../storage';
 import type { DisplayStyle } from '../storage';
-import type { ApproveDecision, MeetingData, Round, RoundState, RunnerState } from '../types';
+import { isPacketKind } from '../types';
+import type { ApproveDecision, MeetingData, PacketEntry, Round, RoundState, RunnerState } from '../types';
 
 const approvalLabels: Record<ApproveDecision, string> = { approve: '承認する', reject: '却下する' };
 
@@ -26,12 +31,11 @@ type Connection = { facadeUrl: string; token: string; id: string };
 type LoadedMeeting = { data: MeetingData; runner?: RunnerState; connection?: Connection };
 type RefreshRequest = { silent: boolean; done: Promise<void> };
 
-type ListItem = Exclude<TimelineItem, { type: 'synthesis' }>;
+type ListItem = Exclude<TimelineItem, { type: 'synthesis' | 'agenda' }>;
 type RoundItem = Extract<ListItem, { type: 'roundHeader' }>;
 type MeetingSection = {
   key: string;
   header?: RoundItem;
-  title?: string;
   data: ListItem[];
 };
 
@@ -44,9 +48,6 @@ function makeSections(items: ListItem[]): MeetingSection[] {
     if (item.type === 'roundHeader') {
       section = { key: item.round, header: item, data: [] };
       sections.push(section);
-    } else if (item.type === 'agenda') {
-      prelude.title = 'アジェンダ';
-      prelude.data.push(item);
     } else if (item.type !== 'timeout') {
       section.data.push(item);
     }
@@ -72,9 +73,10 @@ function MeetingContent({ data, displayStyle, refreshing, refresh, openPacket }:
 }) {
   const { colors, ui } = useTheme();
   const { state, packets } = data;
+  const seatIds = useMemo(() => state.seats.map(seat => seat.seat_id), [state.seats]);
   const { items, synthesis, sections, versions } = useMemo(() => {
     const timeline = buildTimeline(state, packets);
-    const items = timeline.filter(item => item.type !== 'synthesis');
+    const items = timeline.filter((item): item is ListItem => item.type !== 'synthesis' && item.type !== 'agenda');
     return {
       items,
       synthesis: timeline.find(item => item.type === 'synthesis'),
@@ -84,23 +86,11 @@ function MeetingContent({ data, displayStyle, refreshing, refresh, openPacket }:
   }, [state, packets]);
 
   function roundHeader(round: Round, phase: RoundState['phase']) {
-    return <RoundHeader round={round} phase={phase} rows={receptionRowsForRound(state, round)} />;
+    return <RoundHeader round={round} phase={phase} rows={receptionRowsForRound(state, round)} variant={displayStyle} />;
   }
 
-  function renderItem({ item }: { item: ListItem }) {
+  function renderContent(item: ListItem, reply: boolean) {
     switch (item.type) {
-      case 'agenda':
-        return (
-          <View style={[ui.card, ui.systemCard, styles.agenda, { backgroundColor: colors.system }]}>
-            {displayStyle === 'line' && (
-              <Text accessibilityRole="header" style={[ui.label, styles.agendaLabel]}>アジェンダ</Text>
-            )}
-            <Text selectable style={[ui.body, styles.agendaTopic]}>{item.entry.packet.body.topic}</Text>
-            {item.entry.packet.body.shared_materials.map((material, index) => (
-              <Text selectable key={index} style={ui.muted}>{material}</Text>
-            ))}
-          </View>
-        );
       case 'roundHeader': return roundHeader(item.round, item.phase);
       case 'attest': return <AttestRow entry={item.entry} />;
       case 'gate': return <GateCard entry={item.entry} />;
@@ -108,13 +98,27 @@ function MeetingContent({ data, displayStyle, refreshing, refresh, openPacket }:
       case 'packet': {
         const id = item.entry.packet.header.packet_id;
         return (
-          <PacketBubble entry={item.entry}
+          <PacketBubble entry={item.entry} seatIds={seatIds} variant={displayStyle} reply={reply}
             isSuperseded={versions.supersededIds.has(id)}
             onPress={() => openPacket(id)}
           />
         );
       }
     }
+  }
+
+  function renderItem({ item }: { item: ListItem }) {
+    return <View style={styles.lineItem}>{renderContent(item, false)}</View>;
+  }
+
+  // Slack threads: the round's first post is the parent; later posts hang off a left rail as replies.
+  function renderThreadItem({ item, index, section }: { item: ListItem; index: number; section: MeetingSection }) {
+    if (!section.header || index === 0) return <View style={styles.threadItem}>{renderContent(item, false)}</View>;
+    return (
+      <View style={[styles.reply, { borderLeftColor: colors.rail }]}>
+        {renderContent(item, true)}
+      </View>
+    );
   }
 
   const footer = (
@@ -124,10 +128,10 @@ function MeetingContent({ data, displayStyle, refreshing, refresh, openPacket }:
     </View>
   );
   const listProps = {
+    style: { backgroundColor: colors.chatBg },
     contentContainerStyle: styles.list,
     keyboardShouldPersistTaps: 'handled' as const,
     keyExtractor: itemKey,
-    renderItem,
     refreshControl: (
       <RefreshControl refreshing={refreshing} onRefresh={refresh}
         colors={[colors.accentText]} tintColor={colors.accentText} progressBackgroundColor={colors.surface} />
@@ -136,24 +140,33 @@ function MeetingContent({ data, displayStyle, refreshing, refresh, openPacket }:
       ? <Text style={[ui.muted, styles.message]}>まだ発言がありません</Text>
       : undefined,
     ListFooterComponent: footer,
-    ItemSeparatorComponent: ItemSeparator,
   };
 
-  return displayStyle === 'line' ? <FlatList {...listProps} data={items} /> : (
+  return displayStyle === 'line' ? <FlatList {...listProps} data={items} renderItem={renderItem} /> : (
     <SectionList<ListItem, MeetingSection>
       {...listProps}
       sections={sections}
+      renderItem={renderThreadItem}
       stickySectionHeadersEnabled={false}
       renderSectionHeader={({ section }) => section.header
         ? roundHeader(section.header.round, section.header.phase)
-        : section.title ? <Text accessibilityRole="header" style={[ui.label, styles.agendaLabel]}>{section.title}</Text>
-          : null}
+        : null}
     />
   );
 }
 
-function ItemSeparator() {
-  return <View style={styles.separator} />;
+function agendaOf(data: MeetingData): PacketEntry<'agenda'> | undefined {
+  return data.packets.new_packets.find((entry): entry is PacketEntry<'agenda'> => isPacketKind(entry, 'agenda'));
+}
+
+type MentionQuery = { start: number; end: number; token: string };
+
+/** The `@partial` token right before the cursor, if any (Slack-style mention autocomplete). */
+function mentionQuery(text: string, cursor: number): MentionQuery | undefined {
+  const before = text.slice(0, cursor);
+  const match = /(^|\s)[@＠]([^\s@＠]*)$/.exec(before);
+  if (!match) return undefined;
+  return { start: before.length - match[2].length - 1, end: cursor, token: match[2] };
 }
 
 function RunnerIndicator({ runner }: { runner?: RunnerState }) {
@@ -183,6 +196,10 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
   const [writeError, setWriteError] = useState<string>();
   const [addressee, setAddressee] = useState<string>();
   const [text, setText] = useState('');
+  const [cursor, setCursor] = useState(0);
+  // Moves the native caret to where the removed `@…` fragment began, once; released on the next selection event.
+  const [forcedSelection, setForcedSelection] = useState<{ start: number; end: number }>();
+  const [pickerOpen, setPickerOpen] = useState(false);
   const active = useRef(false);
   const inFlight = useRef<RefreshRequest | null>(null);
   const writing = useRef(false);
@@ -201,7 +218,14 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
     !state.round_states.some(round => round.phase === 'open') &&
     (runner?.phase === 'idle' || runner?.phase === 'done' || runner?.phase === 'error' ||
       runner?.phase === 'awaiting_approval');
-  const seatId = state?.seats.some(seat => seat.seat_id === addressee) ? addressee : undefined;
+  const seatIds = useMemo(() => state?.seats.map(seat => seat.seat_id) ?? [], [state?.seats]);
+  const explicitSeat = addressee !== undefined && seatIds.includes(addressee) ? addressee : undefined;
+  // The addressee is only ever an explicit selection (picker or candidate tap), never inferred from the text.
+  const seatId = explicitSeat;
+  const query = canMention ? mentionQuery(text, Math.min(cursor, text.length)) : undefined;
+  const candidates = query
+    ? seatIds.filter(id => id.toLowerCase().startsWith(query.token.toLowerCase()))
+    : [];
 
   const refresh = useCallback((silent = false) => {
     const pending = inFlight.current;
@@ -355,6 +379,7 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
       if (active.current) {
         setMeeting(current => current && { ...current, runner: nextRunner });
         setText('');
+        setCursor(0);
         setAddressee(undefined);
       }
     });
@@ -367,6 +392,31 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
     void saveSettings({ displayStyle: value }).catch(() => {
       if (active.current && saveAttempt.current === attempt) setSaveFailed(true);
     });
+  }
+
+  function chooseCandidate(seat: string) {
+    if (!query) return;
+    // Select the seat explicitly and drop the typed `@…` fragment from the body.
+    const caret = query.start;
+    setText(text.slice(0, query.start) + text.slice(query.end));
+    setCursor(caret);
+    setForcedSelection({ start: caret, end: caret });
+    setAddressee(seat);
+  }
+
+  function chooseSeat(seat: string) {
+    setAddressee(seat);
+    setPickerOpen(false);
+  }
+
+  function onSelectionChange(event: TextInputSelectionChangeEvent) {
+    setCursor(event.nativeEvent.selection.end);
+    if (forcedSelection) setForcedSelection(undefined);
+  }
+
+  function goBack() {
+    if (router.canGoBack()) router.back();
+    else router.replace('/');
   }
 
   const nextStyle = displayStyle === 'line' ? 'slack' : 'line';
@@ -384,51 +434,19 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
   const errorStyle = [ui.body, styles.error, { color: colors.red }];
   const writeFeedback = writeError && <Text accessibilityLiveRegion="polite" style={errorStyle}>{writeError}</Text>;
 
+  const agenda = data && agendaOf(data);
+  const hasText = !!text.trim();
+
   return (
-    <KeyboardAvoidingView style={styles.screen} behavior={!fixture && Platform.OS === 'ios' ? 'padding' : undefined}>
-      <Stack.Screen options={{
-        title: (data && topicOf(data.packets)) || '会議',
-        headerTitleStyle: { fontSize: 16 },
-        headerRight: () => (
-          <View style={styles.headerActions}>
-            <Pressable accessibilityRole="button"
-              accessibilityLabel={nextStyle === 'line' ? 'ライン風に切り替え' : 'スレッド風に切り替え'}
-              disabled={!settingsReady} accessibilityState={{ disabled: !settingsReady }}
-              onPress={() => chooseStyle(nextStyle)} style={[styles.headerButton, !settingsReady && ui.disabled]}>
-              <Text style={[styles.headerIcon, { color: colors.ink }]}>⇄</Text>
-            </Pressable>
-            <Pressable accessibilityRole="button" accessibilityLabel="更新"
-              disabled={refreshDisabled} accessibilityState={{ disabled: refreshDisabled }}
-              onPress={update} style={[styles.headerButton, refreshDisabled && ui.disabled]}>
-              <Text style={[styles.headerIcon, { color: colors.ink }]}>↻</Text>
-            </Pressable>
-          </View>
-        ),
-      }} />
-      {(data || saveFailed) && (
-        <View style={[styles.header, { backgroundColor: colors.header, borderBottomColor: colors.border }]}>
-          {data && (
-            <>
-              <StateBanner state={data.state.meeting_state} canApprove={canApprove} />
-              {(runner?.phase === 'error' || (runner?.phase === 'running' && phase !== 'OPEN')) &&
-                <RunnerIndicator runner={runner} />}
-            </>
-          )}
-          {canApprove && (
-            <View style={styles.controls}>
-              <Pressable accessibilityRole="button" disabled={writeBusy} onPress={() => confirmApproval('approve')}
-                style={[ui.button, ui.primary, writeBusy && ui.disabled]}>
-                <Text style={ui.primaryText}>{approvalLabels.approve}</Text>
-              </Pressable>
-              <Pressable accessibilityRole="button" disabled={writeBusy} onPress={() => confirmApproval('reject')}
-                style={[ui.button, { backgroundColor: colors.redBackground }, writeBusy && ui.disabled]}>
-                <Text style={[ui.label, { color: colors.red }]}>{approvalLabels.reject}</Text>
-              </Pressable>
-            </View>
-          )}
-          {saveFailed && <Text accessibilityLiveRegion="polite" style={ui.muted}>表示設定を保存できませんでした</Text>}
-        </View>
-      )}
+    <KeyboardAvoidingView style={[styles.screen, { backgroundColor: colors.chatBg }]}
+      behavior={!fixture && Platform.OS === 'ios' ? 'padding' : undefined}>
+      <ChatHeader title={(data && topicOf(data.packets)) || '会議'} count={state?.seats.length}
+        onBack={goBack} backgroundColor={colors.chatBg}>
+        <HeaderIcon glyph="⇄" label={nextStyle === 'line' ? 'ライン風に切り替え' : 'スレッド風に切り替え'}
+          disabled={!settingsReady} onPress={() => chooseStyle(nextStyle)} />
+        <HeaderIcon glyph="↻" label="更新" disabled={refreshDisabled} onPress={update} />
+      </ChatHeader>
+      {agenda && <AgendaAnnouncement entry={agenda} />}
       {error && (
         <View style={styles.status}>
           <Text accessibilityLiveRegion="polite" style={errorStyle}>{error}</Text>
@@ -442,11 +460,43 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
           openPacket={openPacket} />
           : loading && <ActivityIndicator style={styles.status} color={colors.accent} accessibilityLabel="読み込み中" />}
       </View>
-      <SafeAreaView edges={['bottom']} style={[styles.composer, {
-        backgroundColor: colors.header, borderTopColor: colors.border,
-      }]}>
+      <SafeAreaView edges={['bottom']} style={[styles.composer, { backgroundColor: colors.header }]}>
+        {(data || saveFailed) && (
+          <View style={[styles.band, { borderBottomColor: colors.border }]}>
+            <View style={styles.bandRow}>
+              {data && <StateBanner state={data.state.meeting_state} canApprove={canApprove} />}
+              {data && (runner?.phase === 'error' || (runner?.phase === 'running' && phase !== 'OPEN')) &&
+                <RunnerIndicator runner={runner} />}
+              {canApprove && (
+                <View style={styles.controls}>
+                  <Pressable accessibilityRole="button" disabled={writeBusy} onPress={() => confirmApproval('approve')}
+                    style={[ui.button, ui.primary, styles.bandButton, writeBusy && ui.disabled]}>
+                    <Text style={ui.primaryText}>{approvalLabels.approve}</Text>
+                  </Pressable>
+                  <Pressable accessibilityRole="button" disabled={writeBusy} onPress={() => confirmApproval('reject')}
+                    style={[ui.button, styles.bandButton, { backgroundColor: colors.redBackground }, writeBusy && ui.disabled]}>
+                    <Text style={[ui.label, { color: colors.red }]}>{approvalLabels.reject}</Text>
+                  </Pressable>
+                </View>
+              )}
+            </View>
+            {saveFailed && <Text accessibilityLiveRegion="polite" style={ui.muted}>表示設定を保存できませんでした</Text>}
+          </View>
+        )}
         <View style={styles.composerContent}>
-          {canMention && (
+          {candidates.length > 0 && (
+            <View accessibilityRole="menu" style={[styles.popup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              {candidates.map(id => (
+                <Pressable key={id} accessibilityRole="menuitem" accessibilityLabel={`宛先 ${id}`}
+                  onPress={() => chooseCandidate(id)}
+                  style={({ pressed }) => [styles.candidate, pressed && { backgroundColor: colors.pressed }]}>
+                  <SeatAvatar seat={id} size={26} shape="rounded" />
+                  <Text style={ui.label}>@{id}</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
+          {canMention && pickerOpen && (
             <ScrollView horizontal keyboardShouldPersistTaps="handled"
               style={styles.seatScroll} contentContainerStyle={styles.seatRow}>
               {state.seats.map(({ seat_id }) => {
@@ -454,34 +504,56 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
                 return (
                   <Pressable key={seat_id} accessibilityRole="button" accessibilityLabel={seat_id}
                     accessibilityState={{ selected, disabled: writeBusy }} disabled={writeBusy}
-                    onPress={() => setAddressee(seat_id)} style={[ui.button, styles.seat, selected && ui.primary]}>
-                    <View style={[styles.avatar, { backgroundColor: colors.surface }]} aria-hidden>
-                      <Text style={ui.label}>{Array.from(seat_id)[0]?.toUpperCase()}</Text>
-                    </View>
+                    onPress={() => chooseSeat(seat_id)} style={[ui.button, styles.seat, selected && ui.primary]}>
+                    <SeatAvatar seat={seat_id} size={24} />
                     <Text style={selected ? ui.primaryText : ui.label}>{seat_id}</Text>
                   </Pressable>
                 );
               })}
             </ScrollView>
           )}
-          {canMention && seatId === undefined && (
+          {canMention && seatId !== undefined && (
+            <View style={styles.addresseeRow}>
+              <Text style={[ui.chip, { color: colors.mention, backgroundColor: colors.mentionBackground }]}>
+                宛先 @{seatId}
+              </Text>
+              {explicitSeat !== undefined && (
+                <Pressable accessibilityRole="button" accessibilityLabel="宛先を解除" hitSlop={8}
+                  onPress={() => setAddressee(undefined)}>
+                  <Text style={ui.muted}>✕</Text>
+                </Pressable>
+              )}
+            </View>
+          )}
+          {canMention && seatId === undefined && hasText && (
             <Text style={ui.muted}>宛先のエージェントを選んでください（＠メンション）。宛先なしの投稿はできません</Text>
           )}
           {writeFeedback}
           <View style={styles.messageRow}>
+            <Pressable accessibilityRole="button" accessibilityLabel="宛先を選ぶ"
+              accessibilityState={{ disabled: !canMention, expanded: pickerOpen }} disabled={!canMention}
+              onPress={() => setPickerOpen(open => !open)}
+              style={[styles.action, !canMention && ui.disabled]}>
+              <Text style={[styles.actionGlyph, { color: pickerOpen ? colors.accentText : colors.muted }]}>＠</Text>
+            </Pressable>
             {canMention ? (
               <TextInput accessibilityLabel="メンションの内容"
-                style={[ui.input, styles.mentionInput, seatId === undefined && ui.disabled]}
-                value={text} onChangeText={setText} editable={seatId !== undefined && !writeBusy} multiline />
+                placeholder="＠で宛先を指定してメッセージを入力" placeholderTextColor={colors.muted}
+                style={[styles.mentionInput, { backgroundColor: colors.inputBg, color: colors.ink }]}
+                value={text} onChangeText={setText} onSelectionChange={onSelectionChange}
+                selection={forcedSelection}
+                editable={!writeBusy} multiline />
             ) : (
-              <View style={[ui.input, styles.mentionInput, styles.disabledInput, { backgroundColor: colors.pressed }]}>
+              <View style={[styles.mentionInput, styles.disabledInput, { backgroundColor: colors.inputBg }]}>
                 <Text numberOfLines={1} adjustsFontSizeToFit style={ui.muted}>{postingReason}</Text>
               </View>
             )}
-            <Pressable accessibilityRole="button" disabled={!canSend}
+            <Pressable accessibilityRole="button" accessibilityLabel="送信" disabled={!canSend}
               accessibilityState={{ disabled: !canSend }} onPress={sendMention}
-              style={[styles.send, !canSend && ui.disabled]}>
-              <Text style={[ui.label, { color: canMention ? colors.accentText : colors.muted }]}>送信</Text>
+              style={[styles.send, canSend && { backgroundColor: colors.accent }]}>
+              <Text style={[styles.sendGlyph, {
+                color: canSend ? colors.onAccent : colors.muted,
+              }]}>➤</Text>
             </Pressable>
           </View>
         </View>
@@ -497,33 +569,38 @@ export default function MeetingScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
-  header: {
-    borderBottomWidth: StyleSheet.hairlineWidth, gap: 6, paddingHorizontal: 12, paddingVertical: 8,
-  },
-  headerActions: { flexDirection: 'row' },
-  headerButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  headerIcon: { fontSize: 22 },
   runner: { alignItems: 'flex-start', gap: 4 },
-  controls: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 },
-  list: { width: '100%', maxWidth: 800, alignSelf: 'center', padding: 10, paddingBottom: 24 },
-  agenda: { borderRadius: 16, paddingVertical: 8, gap: 4 },
-  agendaLabel: { fontSize: 13, textAlign: 'center', marginVertical: 2 },
-  agendaTopic: { fontSize: 14, lineHeight: 20 },
-  separator: { height: 6 },
+  controls: { flexDirection: 'row', alignItems: 'center', gap: 8, marginLeft: 'auto' },
+  list: { width: '100%', maxWidth: 800, alignSelf: 'center', paddingHorizontal: 10, paddingTop: 4, paddingBottom: 16 },
+  lineItem: { paddingVertical: 6 },
+  threadItem: { paddingTop: 4 },
+  reply: { marginLeft: 22, borderLeftWidth: 2, paddingLeft: 10, paddingVertical: 2 },
   footer: { gap: 8, marginTop: 8 },
   message: { alignSelf: 'center', textAlign: 'center', marginVertical: 8 },
   status: { padding: 14, gap: 8, alignItems: 'center' },
   error: { textAlign: 'center' },
-  composer: { borderTopWidth: StyleSheet.hairlineWidth },
-  composerContent: { width: '100%', maxWidth: 800, alignSelf: 'center', padding: 10, gap: 6 },
+  composer: {},
+  band: {
+    width: '100%', maxWidth: 800, alignSelf: 'center', paddingHorizontal: 12, paddingVertical: 6, gap: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  bandRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 },
+  bandButton: { minHeight: 36, paddingVertical: 4, borderRadius: 18 },
+  composerContent: { width: '100%', maxWidth: 800, alignSelf: 'center', paddingHorizontal: 8, paddingVertical: 8, gap: 6 },
+  popup: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, paddingVertical: 4, overflow: 'hidden' },
+  candidate: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, minHeight: 44 },
+  addresseeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingLeft: 48 },
   seatScroll: { flexGrow: 0 },
   seatRow: { gap: 8 },
   seat: { flexDirection: 'row', gap: 6, borderRadius: 24 },
-  avatar: {
-    width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
+  messageRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 6 },
+  action: { width: 40, height: 44, alignItems: 'center', justifyContent: 'center' },
+  actionGlyph: { fontSize: 24, fontWeight: '300' },
+  mentionInput: {
+    flex: 1, minHeight: 44, maxHeight: 110, borderRadius: 22, paddingHorizontal: 16, paddingVertical: 10,
+    fontSize: 16,
   },
-  messageRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 4 },
-  mentionInput: { flex: 1, minHeight: 44, maxHeight: 100, borderRadius: 24, paddingVertical: 8 },
   disabledInput: { justifyContent: 'center' },
-  send: { minWidth: 48, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
+  send: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
+  sendGlyph: { fontSize: 19 },
 });
