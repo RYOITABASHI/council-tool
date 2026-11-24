@@ -1233,6 +1233,11 @@ export class StorePresence {
     expected: PresenceBinding | undefined, enrolling: boolean, stageEnrollment: (binding: PresenceBinding) => void,
     bind: (binding: PresenceBinding, registered: () => void) => void,
     published: () => boolean, work: () => T): T {
+    // A recorded binding's claim is already read by checkBinding below —
+    // including via the held lock's binding when no explicit binding is
+    // passed — so the fallback self-probe (and its getfattr dialect
+    // classification) must run before that first nonce read.
+    if ((expected ?? this.locks.get(key)?.binding)?.scheme === 'recorded') files.requireCopySupport();
     this.checkBinding(directory, key, expected, enrolling);
     const held = this.locks.get(key);
     if (held) {
@@ -1248,7 +1253,10 @@ export class StorePresence {
     const copiedAlias = copiedAnchor !== undefined && sameIdentity(identityAt(path), identityAt(copiedAnchor));
     const recorded = expected?.scheme === 'recorded' || copiedAlias ||
       (copied && anchor !== undefined && !sameIdentity(anchor, identityAt(path))) || (!anchor && files.noLink);
-    if (!anchor && recorded) files.requireCopySupport();
+    // The recorded scheme reads and writes nonce claims below; the fallback
+    // self-probe (which also classifies the getfattr dialect) must have run
+    // before any of them, not only when the witness anchor is missing.
+    if (recorded) files.requireCopySupport();
     if (!anchor && !expected) initializePresenceToken(path, anchorPath);
     const fd = openRegular(anchor && !recorded ? anchorPath : path, constants.O_RDWR);
     let directoryFd: number | undefined;
@@ -1605,6 +1613,9 @@ export class FileStore implements Store {
     if (enrollment && (durable || enrollmentBinding?.directory !== this.key)) {
       throw new Error('Invalid council store manifest enrollment record');
     }
+    // Snapshot validation reads the recorded claim via checkBinding below;
+    // establish the fallback self-probe (and its getfattr dialect) first.
+    if ((durable?.record.presence ?? enrollmentBinding)?.scheme === 'recorded') files.requireCopySupport();
     const init = manifestFile.classifyInit(generation, durable, enrollment);
     if (!durable) {
       // This check is deliberately before journal recovery, which can
