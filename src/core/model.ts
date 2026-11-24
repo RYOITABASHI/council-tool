@@ -32,6 +32,7 @@ export interface ReceptionRow {
 export interface RoundRecord {
   state: RoundState;
   directedSeatId?: string;
+  requestPacketId?: string;
   deadline: Instant | null;
   relativeSeconds: number | null;
   swept: boolean;

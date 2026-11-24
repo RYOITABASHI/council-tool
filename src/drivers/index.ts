@@ -55,15 +55,15 @@ export async function getSeatInput(assignment: SeatAssignment, call: ToolCaller)
     throw new Error('council.get_packets did not return seat input and delivery_epoch');
   }
   const packets = new_packets as Packet[];
+  const receipt = { delivery_epoch, ack_packet_ids: packets.map(({ header }) => header.packet_id) };
   return {
+    receipt,
     prompt: formatSeatPrompt(assignment, packets),
     packets,
     notices: result.notices,
     async acknowledge() {
       if (packets.length > 0) {
-        return call('council.get_packets', {
-          ...args, delivery_epoch, ack_packet_ids: packets.map(({ header }) => header.packet_id),
-        });
+        return call('council.get_packets', { ...args, ...receipt });
       }
     },
   };

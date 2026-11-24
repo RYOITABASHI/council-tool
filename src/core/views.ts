@@ -1,3 +1,4 @@
+import { packetTimestamp, parseAbsolute } from './clock.js';
 import type { ClockSample } from './clock.js';
 import { anySeat, audit, bound, findPacket, findRound, findSeat, frozenAnswer, ok, policy } from './meeting.js';
 import { answer } from './model.js';
@@ -26,6 +27,28 @@ export function getState(m: Meeting, principal: string, human: boolean) {
   };
 }
 
+export function runnerEvidence(m: Meeting) {
+  const directed = m.rounds.slice().reverse().find(r => r.directedSeatId !== undefined);
+  let request = directed?.requestPacketId ? findPacket(m, directed.requestPacketId) : undefined;
+  if (directed && directed.requestPacketId === undefined) {
+    // Older stores have no link. Recover only when the opening timestamp identifies one note.
+    const opened = parseAbsolute(directed.state.opened_at);
+    const notes = opened && m.packets.filter(({ packet: { header } }) =>
+      header.kind === 'note' && header.created_at === packetTimestamp(BigInt(opened.ns)));
+    if (notes && notes.length === 1) request = notes[0];
+  }
+  const gate = m.packets.find(({ packet: { header } }) => header.kind === 'gate_decision' && header.round === 'R1');
+  const gateBody = gate?.packet.body;
+  return {
+    directed: directed ? {
+      round: directed.state.round, seat_id: directed.directedSeatId!,
+      text: request && 'text' in request.packet.body ? request.packet.body.text : null,
+    } : null,
+    r1Gate: gateBody && 'result' in gateBody && (gateBody.result === 'pass' || gateBody.result === 'fail')
+      ? gateBody.result : null,
+  };
+}
+
 function envelopePacket(p: StoredPacket) {
   return { ...p.packet, ...(p.attest ? { target_packet_id: p.attest.target_packet_id } : {}) };
 }
@@ -42,6 +65,25 @@ export function inputPacketAllowed(m: Meeting, p: StoredPacket, seatId: string):
     return seat_id === seatId || (!!target && inputPacketAllowed(m, target, seatId));
   }
   return true;
+}
+
+export type InputReceipt = Required<Pick<Operations['get_packets'], 'ack_packet_ids' | 'delivery_epoch'>>;
+
+export function acknowledgeInput(m: Meeting, seatId: string, a: Partial<InputReceipt>,
+  now: ClockSample, position: number, authorized: StoredPacket[]) {
+  const delivery = m.delivery.find(s => s.seat_id === seatId)!;
+  const ack = new Set(delivery.ack);
+  const sent = new Set(delivery.sent);
+  const allowedIds = new Set(authorized.map(({ packet }) => packet.header.packet_id));
+  for (const id of a.ack_packet_ids ?? []) {
+    if (a.delivery_epoch === delivery.epoch && sent.has(id) && allowedIds.has(id)) ack.add(id);
+    else audit(m, now, 'get_packets', 'ignored_ack', {
+      packet_id: id, provided_epoch: a.delivery_epoch,
+      call: { position, seat_id: seatId, delivery_epoch: delivery.epoch },
+    });
+  }
+  delivery.ack = [...ack];
+  return { delivery, ack, sent };
 }
 
 export function getPackets(m: Meeting, principal: string, human: boolean,
@@ -90,21 +132,10 @@ export function getPackets(m: Meeting, principal: string, human: boolean,
     };
   }
 
-  const delivery = m.delivery.find(s => s.seat_id === seatId)!;
-  const ack = new Set(delivery.ack);
-  const sent = new Set(delivery.sent);
-  const allowedIds = new Set(authorized.map(({ packet }) => packet.header.packet_id));
-  for (const id of a.ack_packet_ids ?? []) {
-    if (a.delivery_epoch === delivery.epoch && sent.has(id) && allowedIds.has(id)) ack.add(id);
-    else audit(m, now, 'get_packets', 'ignored_ack', {
-      packet_id: id, provided_epoch: a.delivery_epoch,
-      call: { position, seat_id: seatId, delivery_epoch: delivery.epoch },
-    });
-  }
+  const { delivery, ack, sent } = acknowledgeInput(m, seatId, a, now, position, authorized);
   const new_packets = filtered.filter(p => !ack.has(p.packet.header.packet_id)).map(envelopePacket);
   for (const p of new_packets) sent.add(p.header.packet_id);
   delivery.sent = [...sent];
-  delivery.ack = [...ack];
   const notices = m.rounds.flatMap(r => r.rows.flatMap(row => {
     if (row.seat_id !== seatId || row.state !== 'absent' || delivery.notices.includes(row.round)) return [];
     delivery.notices.push(row.round);

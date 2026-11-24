@@ -13,7 +13,8 @@ import type { Delivery, Meeting, Operation, Operations, Principal, Setup } from 
 import { resolveMaterial, synthesis } from './synthesis.js';
 import type { CouncilError, StoredSeatConfig } from './types.js';
 import { fail, mergeSetup, record, requireArgument, validate } from './validation.js';
-import { getPackets, getState } from './views.js';
+import { acknowledgeInput, getPackets, getState, inputPacketAllowed, runnerEvidence } from './views.js';
+import type { InputReceipt } from './views.js';
 
 export type { Clock, ClockSample, Deadline } from './clock.js';
 export type { ChairConfig, Operation, Operations, Principal, RoundSettings } from './model.js';
@@ -398,7 +399,7 @@ export class Core {
   }
 
   private run<N extends Operation, T>(name: N, principal: Principal, raw: unknown,
-    action: (m: Meeting, a: Operations[N], c: Call) => T, readOnly = false): Promise<T> {
+    action: (m: Meeting, a: Operations[N], c: Call) => T, readOnly: boolean | 'snapshot' = false): Promise<T> {
     // Copy before queueing so caller mutations cannot change queued requests.
     let input: unknown;
     try {
@@ -408,9 +409,9 @@ export class Core {
       return Promise.reject({ code: 'invalid_argument' } satisfies CouncilError);
     }
     return this.enqueue(received => {
-      this.sweepBefore(received);
+      if (readOnly !== 'snapshot') this.sweepBefore(received);
       const now = this.clock.now();
-      const position = ++this.position;
+      const position = readOnly === 'snapshot' ? this.position : ++this.position;
       let original: Meeting | undefined;
       let next: Meeting | undefined;
       let observedHuman: string | undefined;
@@ -444,6 +445,7 @@ export class Core {
           (rawMeeting && principalId && (anySeat(rawMeeting, principalId) ||
             rawMeeting.setup.human_participants.includes(principalId))) ? rawMeeting : undefined);
         if (record(error) && typeof error.code === 'string') {
+          if (readOnly === 'snapshot') throw error;
           if (logMeeting) {
             const copy = structuredClone(logMeeting);
             audit(copy, now, name, error.code, error.detail);
@@ -462,7 +464,7 @@ export class Core {
         }));
       const write = !readOnly && (name !== 'get_packets' || deliveryChanged);
       const changed = [...(next && write ? [next] : []), ...created];
-      if (changed.length || observedHuman !== undefined) this.persist(changed, now, observedHuman);
+      if (readOnly !== 'snapshot' && (changed.length || observedHuman !== undefined)) this.persist(changed, now, observedHuman);
       return structuredClone(output);
     });
   }
@@ -506,8 +508,10 @@ export class Core {
         const seat = seatOrFail(m, seat_id);
         if (used(m, seat) >= seat.quota) fail('invalid_state', { meeting_state: m.state, seat_id, quota_exceeded: true });
         // Admit the note and its round together so a rejected opening leaves no stray note.
-        postNote(m, c, { text });
-        return { ...ok, round_state: startRound(m, `R${m.rounds.length}`, args.deadline, c.now, c.position, seat_id) };
+        const { packet_id } = postNote(m, c, { text });
+        const round_state = startRound(m, `R${m.rounds.length}`, args.deadline, c.now, c.position, seat_id);
+        currentRound(m)!.requestPacketId = packet_id;
+        return { ...ok, round_state };
       }
       if (args.round === 'R0' ? m.state !== 'CREATED' || !hasHuman()
         : m.state !== 'GATE' || currentRound(m)?.state.round !== 'R0') stateError(m);
@@ -516,6 +520,17 @@ export class Core {
 
   submit_answer = (p: Principal, a: unknown) =>
     this.run('submit_answer', p, a, (m, args, c) => submit(m, c, args, false));
+
+  // The facade's input receipt and answer share one store revision.
+  submitAnswerWithInput(p: Principal, a: unknown, receipt: InputReceipt) {
+    const input = structuredClone(receipt);
+    return this.run('submit_answer', p, a, (m, args, c) => {
+      const authorized = m.packets.filter(packet => inputPacketAllowed(m, packet, args.seat_id));
+      const submitted = submit(m, c, args, false);
+      acknowledgeInput(m, args.seat_id, input, c.now, c.position, authorized);
+      return submitted;
+    });
+  }
 
   transcribe_web_seat = (p: Principal, a: unknown) =>
     this.run('transcribe_web_seat', p, a, (m, args, c) =>
@@ -580,6 +595,17 @@ export class Core {
 
   get_state = (p: Principal, a: unknown) =>
     this.run('get_state', p, a, (m, _, c) => getState(m, c.principal, c.human), true);
+
+  snapshotState(p: Principal, a: unknown) {
+    return this.run('get_state', p, a, (m, _, c) => getState(m, c.principal, c.human), 'snapshot');
+  }
+
+  getRunnerState(p: Principal, a: unknown) {
+    return this.run('get_state', p, a, (m, _, c) => {
+      chairOnly(m, c);
+      return { ...getState(m, c.principal, c.human), ...runnerEvidence(m) };
+    }, true);
+  }
 
   get_packets = (p: Principal, a: unknown) =>
     this.run('get_packets', p, a, (m, args, c) => getPackets(m, c.principal, c.human, args, c.now, c.position),
