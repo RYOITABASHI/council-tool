@@ -21,13 +21,25 @@ const lightColors = {
   redBackground: '#FBE5E8',
   blue: '#21538A',
   violet: '#654386',
+  // LINE-style chat surfaces
+  chatBg: '#EEF1F0',
+  bubble: '#FFFFFF',
+  ownBubble: '#8DE385',
+  ownInk: '#0B0B0B',
+  pill: 'rgba(0, 0, 0, 0.32)',
+  pillInk: '#FFFFFF',
+  inputBg: '#EEF1F0',
+  announce: '#FFFFFF',
+  mention: '#1D5FD1',
+  mentionBackground: '#E1EBFB',
+  rail: '#CCDAD4',
 };
 
 const darkColors: typeof lightColors = {
   page: '#0B0B0B',
   surface: '#2A2A2A',
   header: '#111111',
-  listSurface: '#0B0B0B',
+  listSurface: '#111111',
   ink: '#F2F2F2',
   muted: '#9A9A9A',
   border: '#2E2E2E',
@@ -44,6 +56,17 @@ const darkColors: typeof lightColors = {
   redBackground: '#44262B',
   blue: '#9CC9FF',
   violet: '#D7BAF7',
+  chatBg: '#1E1E1E',
+  bubble: '#2C2C2C',
+  ownBubble: '#8DE385',
+  ownInk: '#0B0B0B',
+  pill: '#2C2C2C',
+  pillInk: '#E6E6E6',
+  inputBg: '#262626',
+  announce: '#2A2A2A',
+  mention: '#7FA8FF',
+  mentionBackground: '#22304A',
+  rail: '#3A3A3A',
 };
 
 function makeUi(colors: typeof lightColors) {
