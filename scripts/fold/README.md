@@ -1,5 +1,21 @@
 # Fold facade hosting
 
+## One-command launcher
+
+```sh
+sh scripts/fold/run-facade.sh
+```
+
+The launcher uses `COUNCIL_HOME` if set, otherwise it prefers
+`~/council-spike-home` when present and falls back to `~/.council-tool`.
+It loads the token from `$COUNCIL_HOME/.http-token` when `COUNCIL_HTTP_TOKEN`
+is unset or empty and defaults both principal settings to `host:operator`.
+It finds Node on `PATH` or in Shelly's `termux-libs`, installs dependencies,
+builds and starts the facade, then stays in the watchdog loop. It waits
+`WATCH_INTERVAL` seconds between checks (default `300`).
+
+## Manual launch and watchdog
+
 Run `npm run build` from the repository root before launching. Export the same
 profile in the launcher and watchdog environments.
 
