@@ -31,6 +31,12 @@ export COUNCIL_CODEX_ARGS='--skip-git-repo-check -'
 
 On Fold, `codex_exec` already runs `codex exec`, so drop the leading `exec`
 argument. Make sure `codex_exec` is on the Shelly profile's `PATH`.
+`start-facade.sh` applies this Codex profile automatically when
+`COUNCIL_CODEX_COMMAND` is unset or empty and `codex_exec` is on `PATH`, so
+watchdog restarts use the same profile without the exports above; an
+explicit `COUNCIL_CODEX_COMMAND` always wins, and a `COUNCIL_CODEX_ARGS`
+the operator set (even empty) is preserved — the default args apply only
+when it is unset.
 
 Use `sh scripts/fold/start-facade.sh` to launch or restart a stopped facade. It
 records the PID in `$COUNCIL_HOME/facade.pid` and waits up to 30 seconds for
