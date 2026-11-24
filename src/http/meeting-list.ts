@@ -1,13 +1,22 @@
-import { closeSync, constants, openSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, statSync } from 'node:fs';
 import { compare, iso, parseAbsolute } from '../core/clock.js';
 import type { Meeting } from '../core/model.js';
 import { MEETING_STATES } from '../core/types.js';
 import type { Packet } from '../packet/index.js';
-import { entryName, revisionGeneration, StoreFiles } from '../store/files.js';
+import { entryName, ManifestFile, revisionGeneration, sameIdentity, StoreFiles } from '../store/files.js';
+import { flock } from '../store/index.js';
 import type { Checkpoint } from '../store/index.js';
 
-type Manifest = { meetings: Record<string, string>; checkpoint: Pick<Checkpoint, 'wall'>; generation?: number };
-type MeetingRevision = Omit<Meeting, 'packets'> & { generation?: number; packets: { packet_id: string }[] };
+type Manifest = {
+  meetings: Record<string, string>;
+  checkpoint: Pick<Checkpoint, 'wall'>;
+  generation?: number;
+  revisionDigests?: Record<string, string>;
+};
+type MeetingRevision = Omit<Meeting, 'packets'> & {
+  generation?: number;
+  packets: { packet_id: string; packet_digest?: string }[];
+};
 
 function readManifest(files: StoreFiles, generation: number): Manifest | null {
   if (generation > 0) return JSON.parse(files.readCheckpoint(generation)) as Manifest;
@@ -32,7 +41,8 @@ function readSummary(files: StoreFiles, manifest: Manifest, id: string, revision
 
   return files.inDirectory(files.root, id, dir => {
     // A committed checkpoint can reference a revision whose final name is still being published.
-    const meeting = files.readRevision<MeetingRevision>(dir, name, generation > 0 && generation === manifest.generation);
+    const meeting = files.readRevision<MeetingRevision>(dir, name, generation > 0 && generation === manifest.generation,
+      manifest.revisionDigests?.[id]);
     if (meeting.id !== id || (meeting.generation ?? 0) !== generation || typeof meeting.topic !== 'string' ||
         !MEETING_STATES.includes(meeting.state) || !Array.isArray(meeting.setup?.seats)) {
       throw new Error('Invalid meeting revision');
@@ -41,8 +51,8 @@ function readSummary(files: StoreFiles, manifest: Manifest, id: string, revision
       if (typeof seat?.seat_id !== 'string' || !seat.seat_id) throw new Error('Invalid meeting seat');
       return seat.seat_id;
     });
-    const packets = files.inDirectory(dir, 'packets', packetDir => meeting.packets.map(({ packet_id }) => {
-      const { header } = files.read<Packet>(packetDir, entryName(packet_id) + '.json', 'packet');
+    const packets = files.inDirectory(dir, 'packets', packetDir => meeting.packets.map(({ packet_id, packet_digest }) => {
+      const { header } = files.readPacket<Packet>(packetDir, entryName(packet_id) + '.json', packet_digest);
       if (header.meeting_id !== id || header.packet_id !== packet_id) throw new Error('Invalid meeting packet');
       return { kind: header.kind, time: timestamp(header.created_at) };
     }));
@@ -86,8 +96,22 @@ export function listMeetings(home: string) {
     throw error;
   }
   try {
+    flock(fd, '--shared');
+    const identity = fstatSync(fd, { bigint: true });
+    if (!sameIdentity(identity, statSync(home, { bigint: true, throwIfNoEntry: false }))) {
+      throw new Error('Council store directory changed');
+    }
     const files = new StoreFiles(fd);
     const generation = files.checkpointGeneration();
+    const manifestFile = new ManifestFile(files.root.path, `${identity.dev}:${identity.ino}`, fd, files);
+    const durable = manifestFile.readDurable();
+    const init = manifestFile.classifyInit(generation, durable, manifestFile.readEnrollment(), true);
+    if (init) return [];
+    files.checkRevisionGeneration(generation);
+    if (durable?.record.manifest) {
+      const recorded = JSON.parse(durable.record.manifest) as Manifest | null;
+      if (!recorded || (recorded.generation ?? 0) > generation) throw new Error('Invalid meeting manifest checkpoint record');
+    }
     const manifest = readManifest(files, generation);
     if (manifest === null && generation === 0) return [];
     if (!manifest?.meetings || typeof manifest.meetings !== 'object' || Array.isArray(manifest.meetings) ||
@@ -102,6 +126,9 @@ export function listMeetings(home: string) {
         return [];
       }
     });
+    if (!sameIdentity(identity, statSync(home, { bigint: true, throwIfNoEntry: false }))) {
+      throw new Error('Council store directory changed');
+    }
     return meetings.sort((a, b) => compare(b.activity, a.activity)).map(({ summary }) => summary);
   } finally {
     closeSync(fd);

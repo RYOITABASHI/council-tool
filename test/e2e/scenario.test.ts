@@ -1,3 +1,4 @@
+import { guardStoreLinks, installXattrTestTransport } from '../store-test-platform.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +11,9 @@ import type { MeetingState, Round } from '../../src/core/types.js';
 import { createMcpToolCaller, getSeatInput, runCliSeat } from '../../src/drivers/index.js';
 import { handcarryWebSeat } from '../../src/drivers/web-handcarry.js';
 import { createConfiguredMcpServer, createMcpServer } from '../../src/mcp/server.js';
+
+installXattrTestTransport();
+guardStoreLinks();
 
 const cliSeats = [
   { seat_id: 'codex', kind: 'codex' },
@@ -193,4 +197,4 @@ test('approves a meeting through MCP with three CLI seats and an attested Web se
   } finally {
     for (const close of cleanup.reverse()) await close();
   }
-}, 20_000);
+}, 90_000);

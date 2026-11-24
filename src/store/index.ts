@@ -1,4 +1,5 @@
-import { closeSync, constants, fstatSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
+import { closeSync, constants, fstatSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync,
+  renameSync, statSync, unlinkSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -15,7 +16,8 @@ import type { Round } from '../core/types.js';
 import { mergeSetup, record, validate } from '../core/validation.js';
 import { inputPacketAllowed } from '../core/views.js';
 import { bodySha } from '../packet/index.js';
-import { descriptorPath, identityAt, ManifestFile, openRegular, revisionGeneration, sameEntry, sameIdentity, stageFile, StoreFiles } from './files.js';
+import { contentDigest, copyExclusive, descriptorPath, identityAt, identityNonce, ManifestFile, openRegular,
+  probeLinkCapability, revisionGeneration, sameEntry, sameIdentity, stageFile, StoreFiles } from './files.js';
 import { legacyPositionsFit } from './legacy-positions.js';
 import type { LegacyPositionCursor, LegacyPositionHistory, LegacyPositionStep } from './legacy-positions.js';
 import type { DurableSnapshot, FileIdentity, PresenceBinding } from './files.js';
@@ -81,9 +83,11 @@ type Manifest = {
   meetings: Record<string, string>;
   presence?: string;
   generation?: number;
+  revisionDigests?: Record<string, string>;
+  proofScheme?: 'sealed';
 };
 type CommittedManifest = Manifest & { presence: string; generation: number };
-type PacketRevision = Omit<StoredPacket, 'packet'> & { packet_id: string };
+type PacketRevision = Omit<StoredPacket, 'packet'> & { packet_id: string; packet_digest?: string };
 type MeetingFile = Omit<Meeting, 'packets'> & {
   generation?: number;
   packets: PacketRevision[];
@@ -941,6 +945,11 @@ function parseManifest(bytes: string | undefined): Manifest | undefined {
   if (!manifest.meetings || typeof manifest.meetings !== 'object' || Array.isArray(manifest.meetings) ||
       Object.values(manifest.meetings).some(revision => typeof revision !== 'string') ||
       (manifest.presence !== undefined && typeof manifest.presence !== 'string') ||
+      (manifest.proofScheme !== undefined && (manifest.proofScheme !== 'sealed' || manifest.generation === undefined)) ||
+      (manifest.revisionDigests !== undefined &&
+        (!manifest.revisionDigests || typeof manifest.revisionDigests !== 'object' || Array.isArray(manifest.revisionDigests) ||
+          Object.entries(manifest.revisionDigests).some(([id, digest]) =>
+            !Object.hasOwn(manifest.meetings, id) || typeof digest !== 'string' || !/^[0-9a-f]{64}$/.test(digest)))) ||
       (manifest.generation !== undefined &&
         (!Number.isSafeInteger(manifest.generation) || manifest.generation < 1 || !manifest.presence))) {
     throw new Error('Invalid council store manifest');
@@ -969,7 +978,7 @@ function checkCheckpointOrder(prior: Checkpoint | undefined, next: Checkpoint): 
 
 let flockDialect: 'gnu' | 'toybox' | undefined;
 
-function flock(fd: number, mode: '--shared' | '--exclusive', nonblocking = false): boolean {
+export function flock(fd: number, mode: '--shared' | '--exclusive', nonblocking = false): boolean {
   // The parent keeps the inherited file description open after flock exits.
   const run = (dialect: 'gnu' | 'toybox') => {
     const options = dialect === 'gnu' ? [mode] : [mode === '--shared' ? '-s' : '-x'];
@@ -1055,11 +1064,101 @@ function initializePresenceToken(path: string, anchorPath: string): void {
 }
 
 type PresenceLock = { fd: number; directoryFd: number; identity: FileIdentity; binding: PresenceBinding; exclusive: boolean };
+type PresenceStat = NonNullable<ReturnType<typeof identityAt>>;
+
+function presenceWitnessBytes(path: string, identity: PresenceStat): Buffer {
+  const fd = openRegular(path);
+  try {
+    const actual = fstatSync(fd, { bigint: true });
+    const bytes = readFileSync(fd);
+    const live = identityAt(path);
+    if (!actual.isFile() || actual.nlink !== 1n || (actual.mode & 0o7777n) !== 0o600n ||
+        !sameEntry(identity, actual) || !sameEntry(actual, fstatSync(fd, { bigint: true })) ||
+        !sameEntry(actual, live) || live?.nlink !== 1n || actual.mode !== live.mode) presenceChanged();
+    return bytes;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function matchesPresenceWitness(bytes: Buffer, expected: PresenceBinding): boolean {
+  try {
+    return isDeepStrictEqual(JSON.parse(bytes.toString('utf8')), expected);
+  } catch {
+    return false;
+  }
+}
+
+function readPresenceWitness(path: string, expected: PresenceBinding, identity: PresenceStat): void {
+  if (!matchesPresenceWitness(presenceWitnessBytes(path, identity), expected)) presenceChanged();
+}
+
+function presenceWitnessStagePrefix(binding: PresenceBinding): string {
+  return '.presence-witness-' + binding.directory + '-' + contentDigest(JSON.stringify(binding));
+}
+
+function isTornPresenceWitness(directory: string, binding: PresenceBinding, bytes: Buffer): boolean {
+  const expected = Buffer.from(JSON.stringify(binding));
+  if (bytes.length >= expected.length || !bytes.equals(expected.subarray(0, bytes.length))) return false;
+  const prefix = presenceWitnessStagePrefix(binding) + '.';
+  return readdirSync(directory).some(name => {
+    if (!name.startsWith(prefix) || !name.endsWith('.tmp')) return false;
+    const path = join(directory, name);
+    const identity = identityAt(path);
+    return identity?.isFile() && presenceWitnessBytes(path, identity).equals(expected);
+  });
+}
 
 /** Presence belongs to a core, including when cores use the same FileStore adapter. */
 export class StorePresence {
   private readonly locks = new Map<string, PresenceLock>();
   private readonly directories = new Map<string, string>();
+  private readonly nonceChecks = new Map<string, {
+    checkDirectory: () => void;
+    cached?: { fd: number; identity: PresenceStat; nonce: string | undefined };
+  }>();
+
+  withinDirectory<T>(key: string, checkDirectory: () => void, work: () => T): T {
+    const previous = this.nonceChecks.get(key);
+    this.nonceChecks.set(key, { checkDirectory });
+    try {
+      return work();
+    } finally {
+      if (previous) this.nonceChecks.set(key, previous);
+      else this.nonceChecks.delete(key);
+    }
+  }
+
+  private claim(directory: string, key: string, path: string, fd: number, expected: FileIdentity, token: string,
+    install?: string, fresh = false): string | undefined {
+    const interval = this.nonceChecks.get(key);
+    const check = () => {
+      interval?.checkDirectory();
+      const dir = statSync(directory, { bigint: true });
+      if (`${dir.dev}:${dir.ino}` !== key) presenceChanged();
+      const held = fstatSync(fd, { bigint: true });
+      const actual = identityAt(path);
+      if (!held.isFile() || !actual?.isFile() || held.nlink !== 1n || actual.nlink !== 1n ||
+          !sameIdentity(expected, held) || !sameEntry(held, actual) ||
+          readFileSync(descriptorPath(fd), 'utf8') !== token || !sameEntry(held, identityAt(path))) presenceChanged();
+      return held;
+    };
+    const actual = check();
+    const cached = interval?.cached;
+    if (!fresh && install === undefined && cached?.fd === fd &&
+        sameEntry(cached.identity, actual) && cached.identity.ctimeNs === actual.ctimeNs) return cached.nonce;
+    const nonce = identityNonce(fd, check, install);
+    if (interval) {
+      delete interval.cached;
+      if (install === undefined) {
+        const after = check();
+        if (sameEntry(actual, after) && actual.ctimeNs === after.ctimeNs) {
+          interval.cached = { fd, identity: after, nonce };
+        }
+      }
+    }
+    return nonce;
+  }
 
   get canReanchor(): boolean {
     for (const [key, lock] of this.locks) {
@@ -1083,22 +1182,54 @@ export class StorePresence {
     const anchor = identityAt(anchorPath);
     if (!held && !anchor && !expected) return;
     const presence = identityAt(path);
-    if (!presence?.isFile() || (held && !sameIdentity(presence, held.identity)) ||
-        (anchor && (!anchor.isFile() || !sameIdentity(presence, anchor)))) presenceChanged();
+    if (!presence?.isFile() || (held && !sameIdentity(presence, held.identity))) presenceChanged();
     if (expected && expected.directory !== key) {
       // A directory copy has its own lock domain. Require both copied names
       // from the recorded directory before enrolling its existing inode.
       const oldAnchor = presencePaths(directory, expected.directory)[1];
+      const old = identityAt(oldAnchor);
       if (held || samePresenceInode(presenceInode(presence), expected.inode) ||
-          !identityAt(oldAnchor)?.isFile() || readPresenceToken(oldAnchor) !== expected.token) presenceChanged();
+          !old?.isFile() || readPresenceToken(path) !== expected.token) presenceChanged();
+      if (expected.scheme === 'recorded') {
+        if (presence.nlink !== 1n || sameIdentity(presence, old)) presenceChanged();
+        readPresenceWitness(oldAnchor, expected, old);
+      } else {
+        const aliased = sameIdentity(presence, old);
+        const localAlias = anchor !== undefined && sameIdentity(presence, anchor);
+        if ((aliased && presence.nlink !== 2n) ||
+            (!aliased && (presence.nlink !== (localAlias ? 2n : 1n) || old.nlink !== 1n)) ||
+            readPresenceToken(oldAnchor) !== expected.token) presenceChanged();
+      }
+      if (anchor && (!anchor.isFile() || (expected.scheme !== 'recorded' && sameIdentity(presence, anchor) ?
+        presence.nlink !== 2n : anchor.nlink !== 1n))) presenceChanged();
+      return;
     } else if ((!anchor && !enrolling) || (expected && !samePresenceInode(presenceInode(presence), expected.inode))) {
       presenceChanged();
     }
-    if (expected && readPresenceToken(path) !== expected.token) presenceChanged();
+    if (expected?.scheme === 'recorded') {
+      if (presence.nlink !== 1n || (anchor && sameIdentity(presence, anchor))) presenceChanged();
+      if (anchor) {
+        const bytes = presenceWitnessBytes(anchorPath, anchor);
+        if (!matchesPresenceWitness(bytes, expected) && !(enrolling && isTornPresenceWitness(directory, expected, bytes))) {
+          presenceChanged();
+        }
+      }
+      const fd = held?.fd ?? openRegular(path);
+      try {
+        if (this.claim(directory, key, path, fd, presence, expected.token) !== expected.claim) presenceChanged();
+      } finally {
+        if (!held) {
+          const interval = this.nonceChecks.get(key);
+          if (interval?.cached?.fd === fd) delete interval.cached;
+          closeSync(fd);
+        }
+      }
+    } else if ((anchor && (!anchor.isFile() || !sameIdentity(presence, anchor) || presence.nlink !== 2n)) ||
+      (!anchor && presence.nlink !== 1n) || (expected && readPresenceToken(path) !== expected.token)) presenceChanged();
   }
 
   // Called under the directory transaction lock, including during EX -> SH.
-  withLock<T>(root: string, key: string, directory: string, reanchor: boolean,
+  withLock<T>(root: string, key: string, directory: string, files: StoreFiles, reanchor: boolean,
     expected: PresenceBinding | undefined, enrolling: boolean, stageEnrollment: (binding: PresenceBinding) => void,
     bind: (binding: PresenceBinding, registered: () => void) => void,
     published: () => boolean, work: () => T): T {
@@ -1112,17 +1243,25 @@ export class StorePresence {
 
     const [path, anchorPath] = presencePaths(directory, key);
     const anchor = identityAt(anchorPath);
+    const copied = expected !== undefined && expected.directory !== key;
+    const copiedAnchor = copied ? presencePaths(directory, expected.directory)[1] : undefined;
+    const copiedAlias = copiedAnchor !== undefined && sameIdentity(identityAt(path), identityAt(copiedAnchor));
+    const recorded = expected?.scheme === 'recorded' || copiedAlias ||
+      (copied && anchor !== undefined && !sameIdentity(anchor, identityAt(path))) || (!anchor && files.noLink);
+    if (!anchor && recorded) files.requireCopySupport();
     if (!anchor && !expected) initializePresenceToken(path, anchorPath);
-    const fd = openRegular(anchor ? anchorPath : path, constants.O_RDWR);
+    const fd = openRegular(anchor && !recorded ? anchorPath : path, constants.O_RDWR);
     let directoryFd: number | undefined;
     let keep = false;
     let linked = false;
+    let witness: PresenceStat | undefined;
+    let binding: PresenceBinding | undefined;
     let registered = false;
     try {
       // The two names designate the same inode. A fresh peer validates the
       // alias too, so replacement of the public name cannot bypass a live SH.
       // The key lets a copied directory establish presence for its own inode.
-      const bootstrap = anchor === undefined;
+      const bootstrap = anchor === undefined || (recorded && (copied || enrolling));
       if (!flock(fd, reanchor || bootstrap ? '--exclusive' : '--shared', true)) {
         throw new Error('Shared council store has a live peer in a different clock epoch');
       }
@@ -1131,16 +1270,84 @@ export class StorePresence {
       if (!sameIdentity(identity, identityAt(path))) presenceChanged();
       const token = readFileSync(fd, 'utf8');
       if (!presenceTokenPattern.test(token)) presenceChanged();
-      const binding = { directory: key, inode: presenceInode(identity), token };
       // Keep both inodes alive as long as this core owns presence.
       directoryFd = openSync(directory, 'r');
+      const tokenBinding = { directory: key, inode: presenceInode(identity), token };
+      if (recorded) {
+        if (copiedAlias) {
+          const old = identityAt(copiedAnchor);
+          const staged = stageFile(join(directory, '.presence-split'), token);
+          try {
+            if (!old || !sameEntry(old, identityAt(copiedAnchor)) || !sameEntry(old, identityAt(path)) ||
+                !sameIdentity(identity, old) || fstatSync(fd, { bigint: true }).nlink !== 2n) presenceChanged();
+            renameSync(staged.path, copiedAnchor);
+            fsyncSync(directoryFd);
+          } finally {
+            staged.close();
+          }
+        }
+        let claim = this.claim(directory, key, path, fd, identity, token, undefined, true);
+        if (!copied && expected?.scheme === 'recorded') {
+          if (claim !== expected.claim) presenceChanged();
+        } else if (claim === undefined) {
+          if (anchor) presenceChanged();
+          claim = randomUUID();
+          this.claim(directory, key, path, fd, identity, token, claim);
+          if (this.claim(directory, key, path, fd, identity, token, undefined, true) !== claim) presenceChanged();
+        }
+        if (claim === undefined) presenceChanged();
+        binding = !copied && expected?.scheme === 'recorded' ? expected : { ...tokenBinding, scheme: 'recorded', claim };
+      } else {
+        binding = tokenBinding;
+      }
       if (bootstrap) {
         fsyncSync(fd);
         // The public name must survive before any record can refer to it.
         fsyncSync(directoryFd);
       }
       stageEnrollment(binding);
-      if (bootstrap) {
+      if (binding.scheme === 'recorded') {
+        const repair = anchor && !matchesPresenceWitness(presenceWitnessBytes(anchorPath, anchor), binding);
+        if (anchor && bootstrap && !repair) {
+          // An interrupted enrollment may have left all bytes visible
+          // before syncing the witness file.
+          files.requireCopySupport();
+          const witnessFd = openRegular(anchorPath);
+          try {
+            if (!sameEntry(anchor, fstatSync(witnessFd, { bigint: true }))) presenceChanged();
+            fsyncSync(witnessFd);
+            fsyncSync(directoryFd);
+            readPresenceWitness(anchorPath, binding, anchor);
+          } finally {
+            closeSync(witnessFd);
+          }
+        }
+        if (repair || !anchor) {
+          files.requireCopySupport();
+          if (repair) {
+            const bytes = presenceWitnessBytes(anchorPath, anchor);
+            if ((!copied && !enrolling) || !isTornPresenceWitness(directory, binding, bytes) ||
+                this.claim(directory, key, path, fd, identity, token) !== binding.claim) presenceChanged();
+            this.checkBinding(directory, key, expected ?? binding, true);
+            if (!presenceWitnessBytes(anchorPath, anchor).equals(bytes)) presenceChanged();
+            renameSync(anchorPath, join(directory, '.presence-witness-' + randomUUID() + '.invalid'));
+            fsyncSync(directoryFd);
+          }
+          const bytes = JSON.stringify(binding);
+          const staged = stageFile(join(directory, presenceWitnessStagePrefix(binding)), bytes);
+          let retain = false;
+          try {
+            fsyncSync(directoryFd);
+            copyExclusive(staged.path, staged.identity, anchorPath, directoryFd, contentDigest(bytes),
+              identity => { witness = identity; });
+          } catch (error) {
+            retain = (error as NodeJS.ErrnoException).code !== 'EEXIST' && !witness;
+            throw error;
+          } finally {
+            staged.close(retain);
+          }
+        }
+      } else if (bootstrap) {
         linkSync(path, anchorPath);
         linked = true;
         fsyncSync(directoryFd);
@@ -1168,7 +1375,11 @@ export class StorePresence {
         try {
           // An enrollment that failed before publishing its binding can
           // retry with the original presence inode.
-          if (linked && !registered && sameIdentity(identityAt(anchorPath), fstatSync(fd, { bigint: true }))) {
+          if (witness && binding && !registered && sameEntry(witness, identityAt(anchorPath))) {
+            readPresenceWitness(anchorPath, binding, witness);
+            unlinkSync(anchorPath);
+            if (directoryFd !== undefined) fsyncSync(directoryFd);
+          } else if (linked && !registered && sameIdentity(identityAt(anchorPath), fstatSync(fd, { bigint: true }))) {
             unlinkSync(anchorPath);
             if (directoryFd !== undefined) fsyncSync(directoryFd);
           }
@@ -1216,7 +1427,8 @@ export class FileStore implements Store {
   private active: Transaction | undefined;
   private detached = false;
 
-  constructor(root: string, private readonly clock: { readonly epoch: string }) {
+  constructor(root: string, private readonly clock: { readonly epoch: string },
+    private readonly options: { forceNoLink?: boolean } = {}) {
     requireClockEpoch(this.clock?.epoch);
     this.root = resolve(root);
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
@@ -1264,12 +1476,16 @@ export class FileStore implements Store {
         presence.checkBinding(files.root.path, this.key, binding, enrolling);
         files.check();
       };
-      return presence.withLock(this.root, this.key, files.root.path,
+      return presence.withLock(this.root, this.key, files.root.path, files,
         checkpoint?.epoch !== this.clock.epoch,
         (transaction.durable ?? transaction.enrollment)?.record.presence, !!transaction.enrollment, binding => {
           if (transaction.durable) return;
           if (transaction.enrollment) {
             manifestFile.checkEnrollment(transaction.enrollment);
+            if (transaction.enrollment.record.presence.scheme === undefined && binding.scheme === 'recorded') {
+              transaction.enrollment = manifestFile.replaceEnrollment(transaction.enrollment,
+                { ...transaction.enrollment.record, presence: binding }, () => check(binding, true));
+            }
           } else {
             const { snapshot } = transaction;
             this.readMeetings(snapshot?.manifest, files);
@@ -1359,13 +1575,21 @@ export class FileStore implements Store {
   }
 
   private withSnapshot<T>(fd: number, directory: string, presence: StorePresence, work: (state: StoreSnapshot) => T): T {
-    const manifestFile = new ManifestFile(directory, this.key, fd);
-    manifestFile.validateBeforeLock(parseManifest);
+    new ManifestFile(directory, this.key, fd).validateBeforeLock(parseManifest);
     // The directory inode itself is the transaction lock. There is no
     // separate lock pathname that can redirect subsequent transactions.
     flock(fd, '--exclusive');
     this.checkDirectoryPath();
-    const files = new StoreFiles(fd);
+    const noLink = this.options.forceNoLink === true || process.env.COUNCIL_STORE_NO_LINK === '1' || !probeLinkCapability(fd);
+    const checkDirectory = () => this.checkDirectoryPath();
+    const files = new StoreFiles(fd, noLink, checkDirectory);
+    return presence.withinDirectory(this.key, checkDirectory, () => this.openSnapshot(directory, files, presence, work));
+  }
+
+  private openSnapshot<T>(directory: string, files: StoreFiles, presence: StorePresence,
+    work: (state: StoreSnapshot) => T): T {
+    const { fd } = files.root;
+    const manifestFile = new ManifestFile(directory, this.key, fd, files, () => this.checkDirectoryPath());
     let durable = manifestFile.readDurable();
     const generation = files.checkpointGeneration();
     files.checkRevisionGeneration(generation);
@@ -1381,14 +1605,16 @@ export class FileStore implements Store {
     if (enrollment && (durable || enrollmentBinding?.directory !== this.key)) {
       throw new Error('Invalid council store manifest enrollment record');
     }
+    const init = manifestFile.classifyInit(generation, durable, enrollment);
     if (!durable) {
       // This check is deliberately before journal recovery, which can
       // overwrite a marked manifest or remove evidence of migration.
-      const current = manifestFile.open();
+      const current = manifestFile.open(init);
       try {
         const legacy = parseManifest(current?.bytes);
         if (generation || legacy?.presence !== undefined ||
-            files.hasUnexpectedPresenceAnchor(enrollmentBinding?.directory) || manifestFile.hasLegacyPublication()) {
+            files.hasUnexpectedPresenceAnchor(enrollmentBinding?.directory,
+              enrollmentBinding !== undefined && enrollmentBinding.scheme === undefined) || manifestFile.hasLegacyPublication()) {
           throw new Error('Council store manifest or its durable checkpoint record is missing');
         }
         if (enrollment && enrollment.record.manifest !== (legacy ? current!.bytes : null)) {
@@ -1409,19 +1635,27 @@ export class FileStore implements Store {
     }
     if (prior?.presence !== undefined && prior.presence !== durable?.record.presence.token) presenceChanged();
 
-    const prepareRestore = () => {
-      this.readMeetings(committed, files, true);
+    const checkRecoveryAuthority = () => {
       this.checkDirectoryPath();
-      presence.checkBinding(directory, this.key, durable?.record.presence);
+      manifestFile.checkDurable(durable);
+      manifestFile.checkEnrollment(enrollment);
+      presence.checkBinding(directory, this.key, durable?.record.presence ?? enrollmentBinding, !!enrollment);
       this.checkGeneration(files, generation);
       files.checkRevisionGeneration(generation);
       files.check();
+      if (generation && files.readCheckpoint(generation) !== published) {
+        throw new Error('Council store manifest checkpoint changed during recovery');
+      }
+    };
+    const prepareRestore = () => {
+      this.readMeetings(committed, files, true);
+      checkRecoveryAuthority();
       if (generation) {
         // A writer can die before either alias is published. Sync all
         // checkpoint artifacts before finalizing the pending revisions.
-        files.ensureCheckpointArtifacts(generation, published);
+        files.ensureCheckpointArtifacts(generation, published, checkRecoveryAuthority, true);
         fsyncSync(fd);
-        this.publishRevisions(committed, files);
+        this.publishRevisions(committed, files, checkRecoveryAuthority);
       }
     };
     if (durable && !generation) {
@@ -1444,21 +1678,24 @@ export class FileStore implements Store {
           throw new Error('Council store manifest checkpoint dropped a committed meeting');
         }
       }
-      updateRecord = current => {
+      updateRecord = (current, verifyNonce) => {
         const record = { ...durable!.record, manifest: published };
         durable = manifestFile.writeDurable(record, durable, () => {
           manifestFile.checkContents(current);
           prepareRestore();
+          verifyNonce?.();
         });
       };
     }
-    manifestFile.recover(durable, published, prepareRestore, updateRecord);
+    manifestFile.recover(durable, published, prepareRestore, updateRecord, init);
     const snapshot = manifestFile.open();
     const state: StoreSnapshot = { fd, files, manifestFile, snapshot: undefined, durable, enrollment, presence, generation };
     try {
-      if (!durable && (!sameIdentity(legacySnapshot?.identity, snapshot?.identity) ||
-          legacySnapshot?.bytes !== snapshot?.bytes ||
-          files.hasUnexpectedPresenceAnchor(enrollmentBinding?.directory) || manifestFile.hasLegacyPublication())) {
+      if (!durable && ((!init && (!sameIdentity(legacySnapshot?.identity, snapshot?.identity) ||
+          legacySnapshot?.bytes !== snapshot?.bytes)) ||
+          (init && snapshot && snapshot.bytes !== 'null') ||
+          files.hasUnexpectedPresenceAnchor(enrollmentBinding?.directory,
+            enrollmentBinding !== undefined && enrollmentBinding.scheme === undefined) || manifestFile.hasLegacyPublication())) {
         throw new Error('Council store manifest changed during legacy admission');
       }
       const manifest = parseManifest(snapshot?.bytes);
@@ -1477,7 +1714,8 @@ export class FileStore implements Store {
       if (generation) {
         this.checkDirectoryPath();
         presence.checkBinding(directory, this.key, durable?.record.presence);
-        files.ensureCheckpointArtifacts(generation, published);
+        files.ensureCheckpointArtifacts(generation, published, checkRecoveryAuthority);
+        if (committed?.revisionDigests) this.publishRevisions(committed, files, checkRecoveryAuthority);
       }
       return work(state);
     } finally {
@@ -1541,7 +1779,7 @@ export class FileStore implements Store {
         const cached = packets.get(packetId);
         if (cached) return cached;
         const packet = files.inDirectory(files.root, id, dir => files.inDirectory(dir, 'packets', packetDir =>
-          files.read<StoredPacket['packet']>(packetDir, packetId + '.json', 'packet')));
+          files.readPacket<StoredPacket['packet']>(packetDir, packetId + '.json')));
         packets.set(packetId, packet);
         return packet;
       };
@@ -1641,25 +1879,25 @@ export class FileStore implements Store {
       const name = revision + '.json';
       const expected = revisionGeneration(name);
       const { generation, ...state } = files.readRevision<MeetingFile>(
-        dir, name, recover && expected > 0 && expected === manifest?.generation,
+        dir, name, recover && expected > 0 && expected === manifest?.generation, manifest?.revisionDigests?.[id],
       );
       if (state.id !== id || (generation ?? 0) !== expected || expected > (manifest?.generation ?? 0)) {
         throw new Error('Invalid council store manifest meeting revision');
       }
       const packets = state.packets.length ? files.inDirectory(dir, 'packets', packetDir =>
-        state.packets.map(({ packet_id, ...metadata }) => ({
-          ...metadata, packet: files.read<StoredPacket['packet']>(packetDir, packet_id + '.json', 'packet'),
+        state.packets.map(({ packet_id, packet_digest, ...metadata }) => ({
+          ...metadata, packet: files.readPacket<StoredPacket['packet']>(packetDir, packet_id + '.json', packet_digest),
         }))) : [];
       return { ...state, packets };
     }));
   }
 
-  private publishRevisions(manifest: Manifest | undefined, files: StoreFiles): void {
+  private publishRevisions(manifest: Manifest | undefined, files: StoreFiles, authorize: () => void): void {
     if (!manifest?.generation) return;
     for (const [id, revision] of Object.entries(manifest.meetings)) {
       const name = revision + '.json';
       if (revisionGeneration(name) === manifest.generation) {
-        files.inDirectory(files.root, id, dir => files.publishRevision(dir, name));
+        files.inDirectory(files.root, id, dir => files.publishRevision(dir, name, manifest.revisionDigests?.[id], authorize));
       }
     }
   }
@@ -1691,19 +1929,39 @@ export class FileStore implements Store {
     const generation = transaction.generation + 1;
     if (!Number.isSafeInteger(generation)) throw new Error('Council store manifest checkpoint generation exhausted');
     const revision = `${generation}-${randomUUID()}`;
-    const meetings = { ...transaction.snapshot?.manifest?.meetings };
+    const committed = transaction.snapshot?.manifest;
+    const meetings = { ...committed?.meetings };
+    const revisionDigests = { ...committed?.revisionDigests };
     for (const meeting of changed) {
       files.inDirectory(files.root, meeting.id, dir => {
+        const committedRevision = committed?.meetings[meeting.id];
         const packets = files.inDirectory(dir, 'packets', packetDir => {
           const entries = meeting.packets.map(({ packet, ...metadata }) => {
             const packet_id = packet.header.packet_id;
-            files.write(packetDir, packet_id + '.json', packet, 'packet', true);
-            return { ...metadata, packet_id };
+            const packet_digest = files.writePacket(packetDir, packet_id + '.json', packet,
+              () => this.checkTransaction(transaction), () => {
+                if (!committed || !committedRevision) return;
+                // The packet itself may not be tracked in this transaction.
+                const digest = committed.revisionDigests?.[meeting.id];
+                if (digest === undefined) throw new Error('Council store committed meeting revision digest is missing');
+                const name = committedRevision + '.json';
+                const state = files.readRevision<MeetingFile>(dir, name, false, digest);
+                const expected = revisionGeneration(name);
+                if (state.id !== meeting.id || (state.generation ?? 0) !== expected ||
+                    expected > (committed.generation ?? 0)) {
+                  throw new Error('Invalid council store manifest meeting revision');
+                }
+                return state.packets.find(entry => entry.packet_id === packet_id)?.packet_digest;
+              });
+            return packet_digest === undefined ? { ...metadata, packet_id } : { ...metadata, packet_id, packet_digest };
           });
           fsyncSync(packetDir.fd);
           return entries;
         }, true);
-        files.write(dir, revision + '.json.pending', { ...meeting, packets, generation }, 'meeting revision');
+        const state = { ...meeting, packets, generation };
+        files.write(dir, revision + '.json.pending', state, 'meeting revision');
+        if (files.noLink) revisionDigests[meeting.id] = contentDigest(JSON.stringify(state));
+        else delete revisionDigests[meeting.id];
         fsyncSync(dir.fd);
       }, true);
       meetings[meeting.id] = revision;
@@ -1715,7 +1973,8 @@ export class FileStore implements Store {
       transaction.snapshot = { ...manifestFile.initialize(), manifest: undefined };
     }
     const presence = transaction.durable!.record.presence.token;
-    this.publishManifest(transaction, { checkpoint, meetings, presence, generation }, priorFiles);
+    this.publishManifest(transaction, { checkpoint, meetings, presence, generation,
+      ...(Object.keys(revisionDigests).length ? { revisionDigests } : {}) }, priorFiles);
     this.recordLoad(transaction.snapshot, files);
   }
 
@@ -1723,6 +1982,7 @@ export class FileStore implements Store {
     priorFiles?: StoreFiles['dependencies'], enrollment?: { binding: PresenceBinding; registered: () => void }): void {
     const { files, manifestFile } = transaction;
     const snapshot = transaction.snapshot!;
+    if (files.noLink) manifest = { ...manifest, proofScheme: 'sealed' };
     const bytes = JSON.stringify(manifest);
     const binding = enrollment?.binding ?? transaction.durable!.record.presence;
     const record = { manifest: bytes, presence: binding };
@@ -1733,7 +1993,12 @@ export class FileStore implements Store {
           files.checkRevisionGeneration(transaction.generation);
           files.checkStagedContents();
         }, linked);
-        this.publishRevisions(manifest, files);
+        this.publishRevisions(manifest, files, () => {
+          this.checkTransaction(transaction, manifest.generation, transaction.durable, binding);
+          if (files.readCheckpoint(manifest.generation) !== bytes) {
+            throw new Error('Council store manifest checkpoint changed during publication');
+          }
+        });
       }, (durable, committed) => {
         this.checkTransaction(transaction, committed ? manifest.generation : transaction.generation, durable, binding);
         if (!committed && snapshot.manifest && transaction.generation === 0) {
