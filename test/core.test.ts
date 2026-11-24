@@ -820,3 +820,21 @@ it('restores observed human participants on a fresh peer and after all peers res
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+it.each(['execution_timeout', 'execution_error', 'output_overflow', 'unparseable_output'])(
+  'accepts %s as a waiver reason', async reason_code => {
+    const { core, meeting_id } = await meeting();
+    await core.open_round(human, argsForRound(meeting_id));
+    await core.waive_seat(human, { ...argsForRound(meeting_id), seat_id: 'a', reason_code });
+    expect((await core.get_state(human, { meeting_id })).reception_table[0])
+      .toMatchObject({ state: 'waived', reason: { code: reason_code } });
+  },
+);
+
+it('rejects an unknown waiver reason', async () => {
+  const { core, meeting_id } = await meeting();
+  await core.open_round(human, argsForRound(meeting_id));
+  await expect(core.waive_seat(human, {
+    ...argsForRound(meeting_id), seat_id: 'a', reason_code: 'bogus_code',
+  })).rejects.toMatchObject({ code: 'invalid_argument' });
+});

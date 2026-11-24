@@ -89,7 +89,8 @@ const checks: Record<Operation, Check> = {
     view: oneOf('input', 'oversight'), ack_packet_ids: strings, delivery_epoch: integer }),
   declare_absent: shape(located),
   waive_seat: shape({ ...located, reason_code: oneOf('seat_unavailable', 'quota_exceeded',
-    'duplicate_coverage', 'chair_judgment', 'other') }, { reason_note: string }),
+    'duplicate_coverage', 'chair_judgment', 'other', 'execution_timeout', 'execution_error',
+    'output_overflow', 'unparseable_output') }, { reason_note: string }),
   chair_gate: shape({ ...meeting, result: oneOf('pass', 'fail') }, {
     rationale: string, resolved_points: strings, unresolved_points: strings, next_round_scope: strings, r2_deadline: deadline,
   }),

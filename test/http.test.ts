@@ -657,3 +657,8 @@ test('startup reconciliation keeps a stranded meeting ready to resume over HTTP'
     await new Promise<void>(resolve => configured.close(() => resolve()));
   }
 });
+
+test('rejects invalid execution bounds when configuring the HTTP server', () => {
+  expect(() => createConfiguredHttpServer({ ...httpEnv, COUNCIL_EXECUTION_TIMEOUT_MS: 'abc' }))
+    .toThrow('COUNCIL_EXECUTION_TIMEOUT_MS must be a positive integer: "abc"');
+});
