@@ -1,6 +1,6 @@
 # council-tool
 
-> Status: **design phase, v9.15**. No implementation yet. See [`PROTOCOL.md`](./PROTOCOL.md), [`PRODUCT.md`](./PRODUCT.md), and [`PLAN.md`](./PLAN.md) for the current specification.
+> Status: **implemented, developer preview**. The core engine, MCP server, HTTP facade, and Android app described in [`PROTOCOL.md`](./PROTOCOL.md), [`PRODUCT.md`](./PRODUCT.md), and [`PLAN.md`](./PLAN.md) are built and in daily use; the specification documents remain the design record (v9.15).
 
 A council of AIs — not models, **seats with context** — debating under a chair, with a human holding final approval.
 
@@ -47,13 +47,19 @@ You can run this with zero API spend: subscription-based CLI/web seats plus a lo
 
 ## Status
 
-Design documents only, v9.15. See `PLAN.md` for the phase breakdown (protocol package → core + MCP → Android app) and `PROTOCOL.md` / `PRODUCT.md` for the specification this will be built against.
+Implemented: the core meeting engine and store, the MCP server, the HTTP facade with its host runner (CLI seats, interruption reconciliation, execution bounds), the Fold hosting scripts under `scripts/fold/`, and the Expo Android app under `app/`. The engine test suite runs in two store modes (linked and link-free) and the full meeting flow — create, rounds, synthesis, human approval, and resume after a mid-run kill — is verified end-to-end on a single Android device. See `PLAN.md` for the phase breakdown and `PROTOCOL.md` / `PRODUCT.md` for the specification.
+
+## Your accounts, your CLIs
+
+council-tool is bring-your-own-subscription. It drives the official Codex and Claude Code CLIs that **you** install, unmodified, on your own machine, signed in with **your own** account through each CLI's own login flow. The app and backend never see, store, or transmit your credentials, embed no API keys, bundle neither vendor's binary, and proxy nothing through any server of ours — a seat invocation is a local process spawn of the CLI, the same binary you would run in a terminal.
+
+Your use of those CLIs remains governed by the vendors' own terms — [OpenAI's Terms of Use](https://openai.com/policies/terms-of-use/) for Codex and [Anthropic's Consumer Terms](https://www.anthropic.com/legal/consumer-terms) and [Claude Code legal notes](https://code.claude.com/docs/en/legal-and-compliance) for Claude Code. Read them before automating seats: in particular, Anthropic designates API-key authentication (its Commercial Terms) as the developer path and restricts routing subscription-plan credentials on behalf of others, so if you build a product or run seats for other people, use API-key seats. Nothing here is endorsed by OpenAI or Anthropic.
 
 ---
 
 ## 日本語要約
 
-複数のAI「席」が議長のもとで往復議論し、人間が最終承認する会議ツールです。差別化の核は**文脈の多様性**：個人史を知るWeb AIと開発文脈を知るCLIエージェントを、席ごとの「文脈契約」のもとで同じ卓に着かせます。既存の類似OSS（llm-council、llm-roundtable等）は素のモデルの多様性と投票/統合が中心ですが、本ツールは文脈契約・転記内容の確認（attest）・非同期の受領管理（pending/transcribed_pending_attest/received/absent/waived）を持つ点が異なります。席は接続手段（Web 席の手渡し／CLI／API／ローカルモデル）・利用条件（サブスク／API課金／無料）・能力ラベルの3軸と文脈契約で定義され、API課金なしでも（サブスク系の席＋ローカルモデルだけで）運用できます。クォータは `SeatConfig.quota` の明示値で決まり、新規登録時に省略した場合は接続種別の既定値を使う。能力ラベルは設定者（人間・議長）が設定値を選ぶ際の参考情報であり、コアは能力ラベルからクォータを導出しない。現在は設計ドキュメントのみの段階です（詳細は [PROTOCOL.md](./PROTOCOL.md)・[PRODUCT.md](./PRODUCT.md)・[PLAN.md](./PLAN.md)）。
+複数のAI「席」が議長のもとで往復議論し、人間が最終承認する会議ツールです。差別化の核は**文脈の多様性**：個人史を知るWeb AIと開発文脈を知るCLIエージェントを、席ごとの「文脈契約」のもとで同じ卓に着かせます。既存の類似OSS（llm-council、llm-roundtable等）は素のモデルの多様性と投票/統合が中心ですが、本ツールは文脈契約・転記内容の確認（attest）・非同期の受領管理（pending/transcribed_pending_attest/received/absent/waived）を持つ点が異なります。席は接続手段（Web 席の手渡し／CLI／API／ローカルモデル）・利用条件（サブスク／API課金／無料）・能力ラベルの3軸と文脈契約で定義され、API課金なしでも（サブスク系の席＋ローカルモデルだけで）運用できます。クォータは `SeatConfig.quota` の明示値で決まり、新規登録時に省略した場合は接続種別の既定値を使う。能力ラベルは設定者（人間・議長）が設定値を選ぶ際の参考情報であり、コアは能力ラベルからクォータを導出しない。現在は実装済みで、開発者向けプレビューとして公開しています（詳細は [PROTOCOL.md](./PROTOCOL.md)・[PRODUCT.md](./PRODUCT.md)・[PLAN.md](./PLAN.md)）。
 
 ## License
 
