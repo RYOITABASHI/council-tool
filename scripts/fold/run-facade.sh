@@ -44,30 +44,41 @@ fi
 
 NODE=
 NPM_CLI=
-if command -v node >/dev/null 2>&1; then
-    NODE=node
-    if ! command -v npm >/dev/null 2>&1; then
-        NPM_CLI="$(dirname "$(command -v node)")/../lib/node_modules/npm/bin/npm-cli.js"
+USE_BARE_NPM=
+for dir in "$(dirname "$HOME")/termux-libs" /data/user/0/dev.shelly.terminal/files/termux-libs; do
+    if [ -x "$dir/node" ] && [ -f "$dir/node_modules/npm/bin/npm-cli.js" ] &&
+        "$dir/node" --version >/dev/null 2>&1; then
+        NODE="$dir/node"
+        NPM_CLI="$dir/node_modules/npm/bin/npm-cli.js"
+        # The start script invokes node by name, including on watchdog restarts.
+        PATH="$dir${PATH:+:$PATH}"
+        export PATH
+        break
     fi
-else
-    for dir in "$(dirname "$HOME")/termux-libs" /data/user/0/dev.shelly.terminal/files/termux-libs; do
-        if [ -x "$dir/node" ]; then
-            NODE="$dir/node"
-            NPM_CLI="$dir/node_modules/npm/bin/npm-cli.js"
-            # The start script invokes node by name, including on watchdog restarts.
-            PATH="$dir${PATH:+:$PATH}"
-            export PATH
-            break
-        fi
-    done
+done
+
+if [ -z "$NODE" ] && node_path=$(command -v node) && node --version >/dev/null 2>&1; then
+    NODE=node
+    if node_dir=$(dirname "$node_path"); then
+        for npm_cli in "$node_dir/../lib/node_modules/npm/bin/npm-cli.js" \
+            "$node_dir/../node_modules/npm/bin/npm-cli.js"; do
+            if [ -f "$npm_cli" ]; then
+                NPM_CLI="$npm_cli"
+                break
+            fi
+        done
+    fi
+fi
+
+if [ -z "$NPM_CLI" ] && npm_path=$(command -v npm) && [ -x "$npm_path" ]; then
+    USE_BARE_NPM=1
 fi
 
 if [ -z "$NODE" ]; then
     printf '%s\n' 'Could not find node on PATH or in Shelly termux-libs' >&2
     exit 1
-fi
-if [ -n "$NPM_CLI" ] && [ ! -f "$NPM_CLI" ]; then
-    printf 'Could not find npm CLI at %s\n' "$NPM_CLI" >&2
+elif [ -z "$NPM_CLI" ] && [ -z "$USE_BARE_NPM" ]; then
+    printf '%s\n' 'found node but no usable npm (npm-cli.js not found and PATH npm is not executable)' >&2
     exit 1
 fi
 
