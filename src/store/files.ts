@@ -72,7 +72,7 @@ function contentDigest(bytes: Buffer | string): string {
 
 export function sameEntry(expected: EntryIdentity, actual: EntryIdentity | undefined): boolean {
   // btrfs can advance ctime after a write even when the file is untouched between stats.
-  return actual !== undefined && sameIdentity(expected, actual) && expected.birthtimeNs === actual.birthtimeNs &&
+  return actual !== undefined && sameIdentity(expected, actual) &&
     (expected.isDirectory() || (expected.mtimeNs === actual.mtimeNs && expected.size === actual.size));
 }
 
@@ -160,7 +160,7 @@ export class StoreFiles {
       staged.close();
     }
     const actual = identityAt(path);
-    if (!actual || !sameIdentity(staged.identity, actual) || staged.identity.birthtimeNs !== actual.birthtimeNs) {
+    if (!actual || !sameIdentity(staged.identity, actual)) {
       throw new Error('Council store ' + label + ' identity changed during transaction');
     }
     this.track(relative, actual, label, contentDigest(bytes));
@@ -254,7 +254,7 @@ export class StoreFiles {
     fsyncSync(dir.fd);
     unlinkSync(pending);
     const actual = identityAt(path);
-    if (!actual || !sameIdentity(identity, actual) || identity.birthtimeNs !== actual.birthtimeNs) {
+    if (!actual || !sameIdentity(identity, actual)) {
       throw new Error('Council store meeting revision changed during publication');
     }
     this.dependencies.delete(pendingRelative);
@@ -325,7 +325,7 @@ export class StoreFiles {
       staged?.close();
     }
     const actual = identityAt(checkpointPath);
-    if (!actual || !sameIdentity(identity, actual) || actual.birthtimeNs !== identity.birthtimeNs ||
+    if (!actual || !sameIdentity(identity, actual) ||
         !sameEntry(actual, identityAt(commitPath))) {
       throw new Error('Council store manifest checkpoint changed during recovery');
     }
@@ -351,7 +351,7 @@ export class StoreFiles {
       staged.close();
     }
     const actual = identityAt(path);
-    if (!actual || !sameIdentity(staged.identity, actual) || staged.identity.birthtimeNs !== actual.birthtimeNs ||
+    if (!actual || !sameIdentity(staged.identity, actual) ||
         this.readCheckpoint(generation) !== bytes) {
       throw new Error('Council store manifest checkpoint artifact changed during publication');
     }
@@ -370,7 +370,7 @@ export class StoreFiles {
       staged.close();
     }
     const actual = identityAt(path);
-    if (!actual || !sameIdentity(staged.identity, actual) || staged.identity.birthtimeNs !== actual.birthtimeNs) {
+    if (!actual || !sameIdentity(staged.identity, actual)) {
       throw new Error('Council store manifest commit proof changed during publication');
     }
     this.track(name, actual, 'manifest commit proof');
@@ -548,7 +548,7 @@ export class ManifestFile {
     renamed?.();
     fsyncSync(this.directoryFd);
     const identity = identityAt(to);
-    if (!identity || !sameIdentity(snapshot.identity, identity) || snapshot.identity.birthtimeNs !== identity.birthtimeNs) {
+    if (!identity || !sameIdentity(snapshot.identity, identity)) {
       throw new Error('Council store manifest checkpoint record changed during transaction');
     }
     return { ...snapshot, identity };

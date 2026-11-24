@@ -1011,6 +1011,12 @@ function presenceInode(identity: NonNullable<ReturnType<typeof identityAt>>): st
   return `${identity.dev}:${identity.ino}:${identity.birthtimeNs}`;
 }
 
+function samePresenceInode(a: string, b: string): boolean {
+  const [aDev, aIno] = a.split(':');
+  const [bDev, bIno] = b.split(':');
+  return aDev === bDev && aIno === bIno;
+}
+
 function readPresenceToken(path: string): string {
   const fd = openRegular(path);
   try {
@@ -1083,9 +1089,9 @@ export class StorePresence {
       // A directory copy has its own lock domain. Require both copied names
       // from the recorded directory before enrolling its existing inode.
       const oldAnchor = presencePaths(directory, expected.directory)[1];
-      if (held || presenceInode(presence) === expected.inode ||
+      if (held || samePresenceInode(presenceInode(presence), expected.inode) ||
           !identityAt(oldAnchor)?.isFile() || readPresenceToken(oldAnchor) !== expected.token) presenceChanged();
-    } else if ((!anchor && !enrolling) || (expected && presenceInode(presence) !== expected.inode)) {
+    } else if ((!anchor && !enrolling) || (expected && !samePresenceInode(presenceInode(presence), expected.inode))) {
       presenceChanged();
     }
     if (expected && readPresenceToken(path) !== expected.token) presenceChanged();
