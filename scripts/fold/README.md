@@ -38,6 +38,15 @@ explicit `COUNCIL_CODEX_COMMAND` always wins, and a `COUNCIL_CODEX_ARGS`
 the operator set (even empty) is preserved — the default args apply only
 when it is unset.
 
+Legacy-client pin: when the default args are applied and
+`codex_exec --version` reports a 0.142.x build, the args also pin
+`-m codex-auto-review`. The ChatGPT-account model catalog no longer
+serves any general model to that client generation — its built-in
+default is rejected with `model_not_found`, and `codex-auto-review` is
+the one model it is still served (verified on-device 2026-11-24). This
+is a stopgap for the bundled client only: remove the pin once Shelly's
+bundled Codex is updated to a build whose default model is served.
+
 Use `sh scripts/fold/start-facade.sh` to launch or restart a stopped facade. It
 records the PID in `$COUNCIL_HOME/facade.pid` and waits up to 30 seconds for
 `/health`. A live PID already in the pidfile is reported as already running.
