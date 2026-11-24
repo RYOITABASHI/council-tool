@@ -38,6 +38,17 @@ if [ -d "$COUNCIL_TERMUX_LIBS" ]; then
     export LD_LIBRARY_PATH
 fi
 
+# Fold profile default: on Shelly the Codex CLI is exposed as `codex_exec`
+# (it already includes the `exec` subcommand, so the preset's leading
+# `exec` argument must be dropped). Default to it when the operator has
+# not configured a command, so watchdog restarts carry the same profile
+# as an interactive start. An explicit COUNCIL_CODEX_COMMAND always wins.
+if [ -z "${COUNCIL_CODEX_COMMAND:-}" ] && command -v codex_exec >/dev/null 2>&1; then
+    COUNCIL_CODEX_COMMAND=codex_exec
+    COUNCIL_CODEX_ARGS=${COUNCIL_CODEX_ARGS-"--skip-git-repo-check -"}
+    export COUNCIL_CODEX_COMMAND COUNCIL_CODEX_ARGS
+fi
+
 logfile=$COUNCIL_HOME/facade.log
 # Keep relative operator paths anchored to the launcher's working directory.
 COUNCIL_HOME=$(CDPATH= cd -- "$COUNCIL_HOME" && pwd)
