@@ -4,7 +4,7 @@ import type { DisplayStyle } from '../storage';
 import { MentionText } from './MentionText';
 import { SeatAvatar } from './SeatAvatar';
 import { statementLead } from './statementLead';
-import { formatTime, useTheme } from './styles';
+import { formatTime, lineHeightFor, useTheme } from './styles';
 
 type Props = {
   entry: MessageEntry; isSuperseded: boolean; onPress: () => void;
@@ -60,8 +60,8 @@ export function PacketBubble({ entry, isSuperseded, onPress, seatIds, variant = 
           </View>
           {(received || !!time) && (
             <View style={styles.receipt}>
-              {received && <Text style={[ui.muted, styles.timestamp]}>既読</Text>}
-              {!!time && <Text style={[ui.muted, styles.timestamp]}>{time}</Text>}
+              {received && <Text numberOfLines={1} style={[ui.muted, styles.timestamp]}>既読</Text>}
+              {!!time && <Text numberOfLines={1} style={[ui.muted, styles.timestamp]}>{time}</Text>}
             </View>
           )}
         </View>
@@ -73,7 +73,7 @@ export function PacketBubble({ entry, isSuperseded, onPress, seatIds, variant = 
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, paddingRight: 8 },
   column: { flex: 1, minWidth: 0, gap: 3 },
-  seat: { fontSize: 12, lineHeight: 15, paddingLeft: 6 },
+  seat: { fontSize: 12, lineHeight: lineHeightFor(12), paddingLeft: 6 },
   bubbleLine: { flexDirection: 'row', alignItems: 'flex-end', gap: 6 },
   bubbleWrap: { maxWidth: '84%', flexShrink: 1, paddingLeft: 5 },
   // Small notch at the speaker's top corner, like LINE's bubble tail.
@@ -82,12 +82,15 @@ const styles = StyleSheet.create({
     borderTopWidth: 12, borderLeftWidth: 12, borderLeftColor: 'transparent',
   },
   bubble: { borderRadius: 19, borderTopLeftRadius: 9, paddingHorizontal: 13, paddingVertical: 9, gap: 4 },
-  bubbleText: { fontSize: 15.5, lineHeight: 22 },
+  bubbleText: { fontSize: 15.5, lineHeight: lineHeightFor(15.5) },
   details: { fontSize: 12 },
-  receipt: { alignItems: 'flex-start', flexShrink: 0, paddingBottom: 1 },
-  timestamp: { fontSize: 10.5, lineHeight: 13, fontVariant: ['tabular-nums'] },
+  // The receipt column takes the row's spare width beside the bubble (the bubble is capped at 84%),
+  // and its labels stretch across it, so "既読" / the time never sit in a box cut to their exact
+  // measured width — a hair of extra rendered width would otherwise wrap their last glyph away.
+  receipt: { flexGrow: 1, flexShrink: 0, alignItems: 'stretch', paddingBottom: 1 },
+  timestamp: { fontSize: 10.5, lineHeight: lineHeightFor(10.5), fontVariant: ['tabular-nums'] },
   slackRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 9, paddingVertical: 5, paddingHorizontal: 4, borderRadius: 6 },
-  slackMeta: { lineHeight: 20 },
+  slackMeta: { lineHeight: lineHeightFor(15) },
   slackName: { fontSize: 15 },
   superseded: { opacity: 0.68 },
 });

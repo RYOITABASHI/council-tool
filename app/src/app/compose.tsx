@@ -45,7 +45,7 @@ export default function ComposeScreen() {
         <View style={ui.card}>
           <Text style={ui.body}>セッションを作成するにはサーバー接続が必要です</Text>
           <Pressable accessibilityRole="button" style={[ui.button, ui.primary]} onPress={() => router.push('/settings')}>
-            <Text style={ui.primaryText}>設定を開く</Text>
+            <Text style={[ui.primaryText, ui.buttonText]}>設定を開く</Text>
           </Pressable>
         </View>
       </View>
@@ -98,8 +98,8 @@ export default function ComposeScreen() {
                 disabled={formLocked} style={[ui.button, styles.seat, checked && ui.primary]}
                 onPress={() => setSelectedAgents(checked ? selected.filter(kind => kind !== id) : [...selected, id])}>
                 <View style={styles.seatHeading}>
-                  <Text style={checked ? ui.primaryText : ui.label}>{label}</Text>
-                  <Text style={ui.chip}>{seat_id}</Text>
+                  <Text style={[checked ? ui.primaryText : ui.label, styles.seatLabel]}>{label}</Text>
+                  <Text numberOfLines={1} style={ui.chip}>{seat_id}</Text>
                 </View>
                 <Text style={[ui.muted, checked && { color: colors.onAccent }]}>{description}</Text>
               </Pressable>
@@ -110,12 +110,12 @@ export default function ComposeScreen() {
         {error && createdId !== undefined && (
           <Pressable accessibilityRole="button" style={ui.button} onPress={() =>
             router.push({ pathname: '/meeting', params: { source: 'facade', meetingId: createdId } })}>
-            <Text style={ui.label}>作成した会議を開く</Text>
+            <Text style={[ui.label, ui.buttonText]}>作成した会議を開く</Text>
           </Pressable>
         )}
         <Pressable accessibilityRole="button" accessibilityState={{ disabled: !canSubmit, busy }}
           disabled={!canSubmit} onPress={() => void submit()} style={[ui.button, ui.primary, !canSubmit && ui.disabled]}>
-          <Text style={ui.primaryText}>作成して開始</Text>
+          <Text style={[ui.primaryText, ui.buttonText]}>作成して開始</Text>
         </Pressable>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -128,5 +128,7 @@ const styles = StyleSheet.create({
   content: { width: '100%', maxWidth: 560, alignSelf: 'center', padding: 12, gap: 12 },
   topic: { minHeight: 112, paddingVertical: 10 },
   seat: { alignItems: 'flex-start', gap: 2 },
-  seatHeading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
+  seatHeading: { flexDirection: 'row', alignItems: 'center', gap: 8, alignSelf: 'stretch' },
+  // The label takes the heading row's spare width, so it is never boxed to its exact measured width.
+  seatLabel: { flex: 1, minWidth: 0 },
 });

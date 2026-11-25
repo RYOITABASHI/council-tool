@@ -91,7 +91,7 @@ function PacketLog({ data, entry }: { data: MeetingData; entry: PacketEntry }) {
             {rows.map(row => (
               <View key={row.seat_id} style={[styles.receptionRow, { borderBottomColor: colors.border }]}>
                 <Text style={[ui.body, styles.seatInfo]}>{row.seat_id}</Text>
-                <Text style={ui.chip}>{receptionLabels[row.state]}</Text>
+                <Text numberOfLines={1} style={ui.chip}>{receptionLabels[row.state]}</Text>
                 {!!row.reason?.code && <Text style={ui.muted}>{row.reason.code}</Text>}
               </View>
             ))}
@@ -187,7 +187,7 @@ function PacketView({ meetingId, packetId, source }: PacketParams) {
           setResult(undefined);
           setAttempt(value => value + 1);
         }}>
-          <Text style={ui.label}>再試行</Text>
+          <Text style={[ui.label, ui.buttonText]}>再試行</Text>
         </Pressable>
       </View>
     );

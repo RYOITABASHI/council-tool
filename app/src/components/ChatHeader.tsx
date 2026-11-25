@@ -22,11 +22,14 @@ export function ChatHeader({ title, count, onBack, backgroundColor, large = fals
           </Pressable>
         )}
         <View style={[styles.titleRow, !onBack && styles.titleInset]}>
+          {/* Title and count share one text that fills the row: a short title always has spare width,
+              and an overlong one ends in "…" instead of silently losing its tail. */}
           <Text accessibilityRole="header" numberOfLines={1}
-            style={[large ? styles.largeTitle : styles.title, styles.shrink, { color: colors.ink }]}>{title}</Text>
-          {count !== undefined && (
-            <Text style={[large ? styles.largeTitle : styles.title, { color: colors.ink }]}>({count})</Text>
-          )}
+            accessibilityLabel={count !== undefined ? `${title}（${count}席）` : title}
+            style={[large ? styles.largeTitle : styles.title, styles.fill, { color: colors.ink }]}>
+            {title}
+            {count !== undefined && <Text>{` (${count})`}</Text>}
+          </Text>
         </View>
         {children && <View style={styles.actions}>{children}</View>}
       </View>
@@ -49,12 +52,12 @@ export function HeaderIcon({ glyph, label, onPress, disabled = false }: {
 
 const styles = StyleSheet.create({
   bar: { borderBottomWidth: StyleSheet.hairlineWidth },
-  row: { height: 52, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 4 },
+  row: { minHeight: 52, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 4 },
   back: { width: 40, height: 44, alignItems: 'center', justifyContent: 'center' },
   chevron: { fontSize: 34, lineHeight: 38, fontWeight: '300', marginTop: -4 },
   titleRow: { flex: 1, flexDirection: 'row', alignItems: 'center', minWidth: 0, paddingRight: 4 },
   titleInset: { paddingLeft: 12 },
-  shrink: { flexShrink: 1 },
+  fill: { flex: 1, minWidth: 0 },
   title: { fontSize: 17, fontWeight: '600' },
   largeTitle: { fontSize: 22, fontWeight: '700' },
   actions: { flexDirection: 'row', alignItems: 'center' },

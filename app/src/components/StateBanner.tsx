@@ -18,7 +18,7 @@ export function StateBanner({ state, canApprove = false }: { state: MeetingState
   const awaiting = state === 'AWAITING_APPROVAL';
   return (
     <View style={[ui.wrap, styles.banner]}>
-      <Text style={[
+      <Text numberOfLines={1} style={[
         ui.chip,
         (awaiting || state === 'GATE' || state === 'BARRIER') && ui.warning,
         state === 'REJECTED' && ui.danger,
