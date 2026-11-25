@@ -9,6 +9,8 @@ import * as primitives from '../src/store/files.js';
 import { FileStore } from '../src/store/index.js';
 import { listMeetings } from '../src/http/meeting-list.js';
 import type { Meeting } from '../src/core/model.js';
+import { packetSha } from '../src/packet/index.js';
+import type { PacketHashInput } from '../src/packet/index.js';
 import { guardStoreLinks, installXattrTestTransport } from './store-test-platform.js';
 
 const fixtureLink = fs.linkSync;
@@ -102,12 +104,17 @@ const key = (root = home) => {
 const checkpoint = {
   epoch: clock.epoch, monotonic: '0', position: 1, wall: '1767225600000000000', offset: '0',
 };
+// PR-D: the store only serves packets whose packet_sha (PROTOCOL §3.4) matches, so the fixture is a real packet.
+const agendaPacket = (() => {
+  const header = { meeting_id: '00000000-0000-4000-8000-000000000001', kind: 'agenda',
+    created_at: '2026-01-01T00:00:00Z', round: null, seat_id: null, supersedes: null } as const;
+  const body = { topic: 'Port', shared_materials: [] };
+  return { header: { packet_id: '00000000-0000-4000-8000-000000000002', ...header,
+    packet_sha: packetSha({ header, body } as unknown as PacketHashInput) }, body };
+})();
 const meeting = {
   id: '00000000-0000-4000-8000-000000000001', topic: 'Port', state: 'CREATED', setup: { seats: [] },
-  packets: [{ packet: { header: {
-    packet_id: '00000000-0000-4000-8000-000000000002', meeting_id: '00000000-0000-4000-8000-000000000001',
-    kind: 'agenda', created_at: '2026-01-01T00:00:00Z',
-  } } }],
+  packets: [{ packet: agendaPacket }],
 } as unknown as Meeting;
 
 function forcedStore(root = home) {
@@ -734,8 +741,18 @@ it('adopts a validated v1 packet using its actual stored bytes', () => {
   expect(fs.readFileSync(packetPath(), 'utf8')).toBe(pretty);
   store.commit([meeting], { ...checkpoint, position: 3 });
   expect(fs.readFileSync(packetPath(), 'utf8')).toBe(pretty);
-  fs.writeFileSync(packetPath(), JSON.stringify(meeting.packets[0]!.packet));
-  expect(() => forcedStore().load()).toThrow(/packet contents disagree/);
+  const rewritten = JSON.stringify(meeting.packets[0]!.packet);
+  fs.writeFileSync(packetPath(), rewritten);
+  // PR-D: bytes that no longer match the adopted receipt are quarantined on load, not fatal.
+  const reader = forcedStore();
+  const [loaded] = reader.load().meetings;
+  expect(loaded!.packets[0]!.quarantined).toEqual({ packet_id: meeting.packets[0]!.packet.header.packet_id,
+    packet_digest: digest(pretty) });
+  reader.commit([loaded!], { ...checkpoint, position: 4 });
+  expect(fs.readFileSync(packetPath(), 'utf8')).toBe(rewritten);
+  const after = JSON.parse(fs.readFileSync(currentRevision(), 'utf8'));
+  expect(after.packets[0]).toMatchObject({ packet_digest: digest(pretty) });
+  expect(after.packets[0]).not.toHaveProperty('quarantined');
 });
 
 it('fails closed on a legacy packet with unexplained bytes', () => {

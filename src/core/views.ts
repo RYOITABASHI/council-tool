@@ -1,6 +1,8 @@
 import { packetTimestamp, parseAbsolute } from './clock.js';
 import type { ClockSample } from './clock.js';
-import { anySeat, audit, bound, findPacket, findRound, findSeat, frozenAnswer, ok, policy } from './meeting.js';
+import { packetSha } from '../packet/index.js';
+import type { PacketHashInput } from '../packet/index.js';
+import { anySeat, audit, bound, currentRound, findPacket, findRound, findSeat, frozenAnswer, noteAttributionValid, ok, policy } from './meeting.js';
 import { answer } from './model.js';
 import type { Meeting, Operations, StoredPacket } from './model.js';
 import type { Round } from './types.js';
@@ -37,16 +39,62 @@ export function runnerEvidence(m: Meeting) {
       header.kind === 'note' && header.created_at === packetTimestamp(BigInt(opened.ns)));
     if (notes && notes.length === 1) request = notes[0];
   }
-  const gate = m.packets.find(({ packet: { header } }) => header.kind === 'gate_decision' && header.round === 'R1');
+  // PR-D: a quarantined mention note never reaches a resumed round's prompt.
+  if (request && !packetIntact(request)) request = undefined;
+  // PR-D: only an intact gate packet may decide the runner's next step; a tampered one reads as no gate.
+  // A meeting has at most one R1 gate decision, so more than one candidate means a forgery: none counts.
+  const gates = m.packets.filter(p => p.packet.header.kind === 'gate_decision' && p.packet.header.round === 'R1');
+  const gate = gates.length === 1 && packetIntact(gates[0]!) ? gates[0] : undefined;
   const gateBody = gate?.packet.body;
+  const gateResult = gateBody && 'result' in gateBody && (gateBody.result === 'pass' || gateBody.result === 'fail')
+    ? gateBody.result : null;
   return {
     directed: directed ? {
       round: directed.state.round, seat_id: directed.directedSeatId!,
       text: request && 'text' in request.packet.body ? request.packet.body.text : null,
     } : null,
-    r1Gate: gateBody && 'result' in gateBody && (gateBody.result === 'pass' || gateBody.result === 'fail')
-      ? gateBody.result : null,
+    r1Gate: gateResult !== null && gateResult === settledGate(m) ? gateResult : null,
   };
+}
+
+/**
+ * PR-D: chair_gate commits its packet together with the state change (pass: SYNTHESIZING; fail: the
+ * gate's R2 opens). The packet is evidence only where the meeting state already agrees with it, so a
+ * forged gate packet, even one whose packet_sha was recomputed where the store keeps no digest,
+ * can neither skip the gate step nor flip its result. Mention rounds (directed) are not gate rounds.
+ */
+function settledGate(m: Meeting): 'pass' | 'fail' | null {
+  const r1 = findRound(m, 'R1');
+  if (!r1 || r1.directedSeatId !== undefined || r1.state.phase !== 'frozen') return null;
+  if (m.state === 'GATE' && currentRound(m) === r1) return null;
+  const r2 = findRound(m, 'R2');
+  return r2 && r2.directedSeatId === undefined ? 'fail' : 'pass';
+}
+
+/**
+ * PR-D: recompute packet_sha with the existing PROTOCOL §3.4 definition. A packet whose digest no
+ * longer matches is quarantined on read: withheld from packet views (and so from the app timeline),
+ * reported by id, and left untouched in the store.
+ */
+export function packetIntact(p: StoredPacket): boolean {
+  // The file store already found this packet's bytes disagreeing with its receipt.
+  if (p.quarantined) return false;
+  try {
+    return packetSha(p.packet as PacketHashInput) === p.packet.header.packet_sha;
+  } catch {
+    return false;
+  }
+}
+
+function quarantine(m: Meeting): Set<string> {
+  return new Set(m.packets.filter(p => !packetIntact(p)).map(p => p.packet.header.packet_id));
+}
+
+/** B3: note attribution for the packet view. Notes without (valid) attribution have no origin. */
+function noteFields(m: Meeting, p: StoredPacket) {
+  if (p.packet.header.kind !== 'note') return {};
+  const note = noteAttributionValid(m, p.note) ? p.note : undefined;
+  return { origin: note ? { ...note.origin } : null, addressee: note?.addressee ?? null };
 }
 
 function envelopePacket(p: StoredPacket) {
@@ -106,21 +154,32 @@ export function getPackets(m: Meeting, principal: string, human: boolean,
     !belongsToSeat || findRound(m, round)?.state.phase === 'frozen';
   if (oversight && a.round !== undefined && !canOversee(a.round)) fail('unauthorized');
 
-  const authorized = m.packets.filter(p => oversight
+  const visible = m.packets.filter(p => oversight
     ? (p.packet.header.round === null || canOversee(p.packet.header.round)) &&
       (!p.heldFor || canOversee(p.heldFor))
     : inputPacketAllowed(m, p, seatId));
+  const bad = quarantine(m);
+  const authorized = visible.filter(p => !bad.has(p.packet.header.packet_id));
   const filtered = authorized.filter(p => a.round === undefined || p.packet.header.round === a.round);
+  // Report only the quarantined packets this response would otherwise have contained.
+  const quarantined_packet_ids = visible.filter(p => bad.has(p.packet.header.packet_id) &&
+    (a.round === undefined || p.packet.header.round === a.round)).map(p => p.packet.header.packet_id);
   const ids = new Set(filtered.map(p => p.packet.header.packet_id));
   const superseded = filtered.flatMap(({ packet: { header } }) =>
     header.supersedes && ids.has(header.supersedes)
       ? [{ old_packet_id: header.supersedes, new_packet_id: header.packet_id }] : []);
-  const common = { superseded, setup_version: m.setupVersion };
+  const common = {
+    superseded, setup_version: m.setupVersion,
+    ...(quarantined_packet_ids.length ? { quarantined_packet_ids } : {}),
+  };
   if (oversight) {
-    const synthesis = m.packets.find(p => p.version === 'current' && p.packet.header.kind === 'synthesis')?.packet;
+    // A quarantined synthesis contributes nothing, including its declared missing records.
+    const synthesis = m.packets.find(p => p.version === 'current' && p.packet.header.kind === 'synthesis' &&
+      !bad.has(p.packet.header.packet_id))?.packet;
     // Packet's discriminator is nested inside its header.
     const body = synthesis?.body;
-    const declared = body && 'declared_missing_records' in body ? body.declared_missing_records : [];
+    const declared = body && 'declared_missing_records' in body && Array.isArray(body.declared_missing_records)
+      ? body.declared_missing_records : [];
     return {
       ...common, new_packets: filtered.map(p => ({
         packet: envelopePacket(p), packet_state: {
@@ -128,6 +187,7 @@ export function getPackets(m: Meeting, principal: string, human: boolean,
         },
         missing_records: p.missing,
         declared_missing_records: declared.filter(record => record.packet_id === p.packet.header.packet_id),
+        ...noteFields(m, p),
       })),
     };
   }

@@ -9,11 +9,11 @@ import {
   findSeat, freeze, ok, open, pending, receptionDetail, sameSeatBinding, startRound, stateError,
 } from './meeting.js';
 import { answer } from './model.js';
-import type { Delivery, Meeting, Operation, Operations, Principal, Setup } from './model.js';
+import type { Delivery, Meeting, NoteAttribution, Operation, Operations, Principal, Setup } from './model.js';
 import { resolveMaterial, synthesis } from './synthesis.js';
 import type { CouncilError, StoredSeatConfig } from './types.js';
 import { fail, mergeSetup, record, requireArgument, validate } from './validation.js';
-import { acknowledgeInput, getPackets, getState, inputPacketAllowed, runnerEvidence } from './views.js';
+import { acknowledgeInput, getPackets, getState, inputPacketAllowed, packetIntact, runnerEvidence } from './views.js';
 import type { InputReceipt } from './views.js';
 
 export type { Clock, ClockSample, Deadline } from './clock.js';
@@ -79,11 +79,14 @@ const closedSeat = (state: string | undefined) => state === 'absent' || state ==
 const result = (packet: { header: { packet_id: string; packet_sha: string } }) =>
   ({ ...ok, packet_id: packet.header.packet_id, packet_sha: packet.header.packet_sha });
 
-function postNote(m: Meeting, c: Call, body: Operations['post_message']['body']) {
+function postNote(m: Meeting, c: Call, body: Operations['post_message']['body'], note: NoteAttribution) {
   const round = m.state === 'OPEN' && !anySeat(m, c.principal) ? currentRound(m)?.state.round : undefined;
   return result(append(m, c.now, 'note', { round: null, seat_id: null, supersedes: null },
-    body, round === undefined ? {} : { heldFor: round }));
+    body, { note, ...(round === undefined ? {} : { heldFor: round }) }));
 }
+
+// The call route decides attribution: only the facade's mention path is a human note.
+const chairNote = (c: Call): NoteAttribution => ({ origin: { kind: 'chair', principal: c.principal }, addressee: null });
 
 function submit(m: Meeting, c: Call, a: Operations['submit_answer'], web: boolean) {
   const convenerTranscribing = web && m.convener === c.principal;
@@ -487,7 +490,9 @@ export class Core {
           newDelivery(s.seat_id, existing.epoch + 1);
       });
       if (JSON.stringify(m.setup.shared_materials) !== JSON.stringify(setup.shared_materials)) {
-        const agenda = m.packets.find(p => p.packet.header.kind === 'agenda' && p.version === 'current')!;
+        const agenda = m.packets.find(p => p.packet.header.kind === 'agenda' && p.version === 'current');
+        // PR-D: a quarantined agenda cannot be superseded; refuse instead of failing on its absence.
+        if (!agenda) stateError(m);
         append(m, c.now, 'agenda', { round: null, seat_id: null, supersedes: agenda.packet.header.packet_id },
           { topic: m.topic, shared_materials: setup.shared_materials });
       }
@@ -497,26 +502,40 @@ export class Core {
     });
 
   open_round = (p: Principal, a: unknown) =>
-    this.run('open_round', p, a, (m, args, c) => {
-      chairOnly(m, c);
-      checkOverride(args.deadline, c.now);
-      const recognized = (id: string) => this.isHuman?.(id) ?? this.knownHumans.has(id);
-      const hasHuman = () => c.principalHuman || recognized(m.convener) || m.setup.human_participants.some(recognized);
-      if ('mention' in args) {
-        if (m.state === 'OPEN' || terminal(m) || (m.state === 'CREATED' && !hasHuman())) stateError(m);
-        const { seat_id, text } = args.mention;
-        const seat = seatOrFail(m, seat_id);
-        if (used(m, seat) >= seat.quota) fail('invalid_state', { meeting_state: m.state, seat_id, quota_exceeded: true });
-        // Admit the note and its round together so a rejected opening leaves no stray note.
-        const { packet_id } = postNote(m, c, { text });
-        const round_state = startRound(m, `R${m.rounds.length}`, args.deadline, c.now, c.position, seat_id);
-        currentRound(m)!.requestPacketId = packet_id;
-        return { ...ok, round_state };
-      }
-      if (args.round === 'R0' ? m.state !== 'CREATED' || !hasHuman()
-        : m.state !== 'GATE' || currentRound(m)?.state.round !== 'R0') stateError(m);
-      return { ...ok, round_state: startRound(m, args.round, args.deadline, c.now, c.position) };
+    this.run('open_round', p, a, (m, args, c) => this.openRound(m, args, c, false));
+
+  /**
+   * The facade's mention route (a human acting in the app). Not reachable through dispatch/MCP,
+   * so a human origin is never inferred from a principal name or the note text.
+   */
+  openHumanMention(p: Principal, a: unknown) {
+    return this.run('open_round', p, a, (m, args, c) => {
+      requireArgument('mention' in args);
+      return this.openRound(m, args, c, true);
     });
+  }
+
+  private openRound(m: Meeting, args: Operations['open_round'], c: Call, humanMention: boolean) {
+    chairOnly(m, c);
+    checkOverride(args.deadline, c.now);
+    const recognized = (id: string) => this.isHuman?.(id) ?? this.knownHumans.has(id);
+    const hasHuman = () => c.principalHuman || recognized(m.convener) || m.setup.human_participants.some(recognized);
+    if ('mention' in args) {
+      if (m.state === 'OPEN' || terminal(m) || (m.state === 'CREATED' && !hasHuman())) stateError(m);
+      const { seat_id, text } = args.mention;
+      const seat = seatOrFail(m, seat_id);
+      if (used(m, seat) >= seat.quota) fail('invalid_state', { meeting_state: m.state, seat_id, quota_exceeded: true });
+      // Admit the note and its round together so a rejected opening leaves no stray note.
+      const { packet_id } = postNote(m, c, { text }, humanMention
+        ? { origin: { kind: 'human', principal: c.principal }, addressee: seat_id } : chairNote(c));
+      const round_state = startRound(m, `R${m.rounds.length}`, args.deadline, c.now, c.position, seat_id);
+      currentRound(m)!.requestPacketId = packet_id;
+      return { ...ok, round_state };
+    }
+    if (args.round === 'R0' ? m.state !== 'CREATED' || !hasHuman()
+      : m.state !== 'GATE' || currentRound(m)?.state.round !== 'R0') stateError(m);
+    return { ...ok, round_state: startRound(m, args.round, args.deadline, c.now, c.position) };
+  }
 
   submit_answer = (p: Principal, a: unknown) =>
     this.run('submit_answer', p, a, (m, args, c) => submit(m, c, args, false));
@@ -525,7 +544,7 @@ export class Core {
   submitAnswerWithInput(p: Principal, a: unknown, receipt: InputReceipt) {
     const input = structuredClone(receipt);
     return this.run('submit_answer', p, a, (m, args, c) => {
-      const authorized = m.packets.filter(packet => inputPacketAllowed(m, packet, args.seat_id));
+      const authorized = m.packets.filter(packet => inputPacketAllowed(m, packet, args.seat_id) && packetIntact(packet));
       const submitted = submit(m, c, args, false);
       acknowledgeInput(m, args.seat_id, input, c.now, c.position, authorized);
       return submitted;
@@ -673,7 +692,7 @@ export class Core {
     this.run('post_message', p, a, (m, args, c) => {
       if (!c.human) chairOnly(m, c);
       if (terminal(m)) stateError(m);
-      return postNote(m, c, args.body);
+      return postNote(m, c, args.body, chairNote(c));
     });
 
   confirm_share = (p: Principal, a: unknown) =>

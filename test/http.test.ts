@@ -144,7 +144,10 @@ afterAll(async () => {
 });
 
 test('serves health without authentication', async () => {
-  expect(await getResponse('/health')).toEqual({ status: 200, body: { ok: true } });
+  // This facade's env has no PATH, so neither CLI seat kind resolves.
+  expect(await getResponse('/health')).toEqual({
+    status: 200, body: { ok: true, cli_seat_kinds: { codex: false, claude: false } },
+  });
 });
 
 test('lists both meetings with their current state, newest activity first', async () => {
@@ -369,7 +372,7 @@ test('starts single-flight and records a directed round and superseding synthesi
   expect(packets.new_packets).toEqual(expect.arrayContaining([
     expect.objectContaining({ packet: expect.objectContaining({
       header: expect.objectContaining({ kind: 'note' }), body: { text },
-    }) }),
+    }), origin: { kind: 'human', principal }, addressee: 'observer' }),
     expect.objectContaining({ packet: first?.packet, packet_state: expect.objectContaining({ version: 'superseded' }) }),
     expect.objectContaining({ packet: expect.objectContaining({
       header: expect.objectContaining({ kind: 'synthesis', supersedes: first?.packet.header.packet_id }),
@@ -661,4 +664,21 @@ test('startup reconciliation keeps a stranded meeting ready to resume over HTTP'
 test('rejects invalid execution bounds when configuring the HTTP server', () => {
   expect(() => createConfiguredHttpServer({ ...httpEnv, COUNCIL_EXECUTION_TIMEOUT_MS: 'abc' }))
     .toThrow('COUNCIL_EXECUTION_TIMEOUT_MS must be a positive integer: "abc"');
+});
+
+test('reports CLI seat kind availability on health using the facade env', async () => {
+  const bin = await mkdtemp(join(tmpdir(), 'council-health-bin-'));
+  const healthHome = await mkdtemp(join(tmpdir(), 'council-health-home-'));
+  const { symlink } = await import('node:fs/promises');
+  await symlink(process.execPath, join(bin, 'codex'));
+  const healthServer = createConfiguredHttpServer({ ...httpEnv, COUNCIL_HOME: healthHome, PATH: bin });
+  try {
+    expect(await getResponse('/health', undefined, 'GET', healthServer)).toEqual({
+      status: 200, body: { ok: true, cli_seat_kinds: { codex: true, claude: false } },
+    });
+  } finally {
+    await new Promise<void>(resolve => healthServer.close(() => resolve()));
+    await rm(bin, { recursive: true, force: true });
+    await rm(healthHome, { recursive: true, force: true });
+  }
 });

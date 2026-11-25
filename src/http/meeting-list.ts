@@ -2,9 +2,8 @@ import { closeSync, constants, fstatSync, openSync, statSync } from 'node:fs';
 import { compare, iso, parseAbsolute } from '../core/clock.js';
 import type { Meeting } from '../core/model.js';
 import { MEETING_STATES } from '../core/types.js';
-import type { Packet } from '../packet/index.js';
 import { entryName, ManifestFile, revisionGeneration, sameIdentity, StoreFiles } from '../store/files.js';
-import { flock } from '../store/index.js';
+import { flock, trustedPacket } from '../store/index.js';
 import type { Checkpoint } from '../store/index.js';
 
 type Manifest = {
@@ -51,29 +50,44 @@ function readSummary(files: StoreFiles, manifest: Manifest, id: string, revision
       if (typeof seat?.seat_id !== 'string' || !seat.seat_id) throw new Error('Invalid meeting seat');
       return seat.seat_id;
     });
-    const packets = files.inDirectory(dir, 'packets', packetDir => meeting.packets.map(({ packet_id, packet_digest }) => {
-      const { header } = files.readPacket<Packet>(packetDir, entryName(packet_id) + '.json', packet_digest);
-      if (header.meeting_id !== id || header.packet_id !== packet_id) throw new Error('Invalid meeting packet');
-      return { kind: header.kind, time: timestamp(header.created_at) };
+    const packets = files.inDirectory(dir, 'packets', packetDir => meeting.packets.map(({ packet_id, packet_digest }, index) => {
+      const read = files.readPacketOrQuarantine<unknown>(packetDir, entryName(packet_id) + '.json', packet_digest);
+      const packet = 'value' in read ? trustedPacket(read.value, id, packet_id) : undefined;
+      // PR-D: a quarantined packet is not trusted for timing, but the meeting stays listed.
+      if (!packet) return undefined;
+      if (index === 0 && packet.header.kind !== 'agenda') throw new Error('Missing original meeting agenda');
+      return { kind: packet.header.kind, time: timestamp(packet.header.created_at) };
     }));
-    const agenda = packets[0];
-    if (agenda?.kind !== 'agenda') throw new Error('Missing original meeting agenda');
+    if (packets.length === 0) throw new Error('Missing original meeting agenda');
+    const trusted = packets.flatMap(packet => packet ? [packet] : []);
+    const roundTimes = () => meeting.rounds.map(round => timestamp(round.state.opened_at));
+    const auditTimes = () => meeting.audit.map(event => timestamp(event.at));
+    const checkpointTime = (wall: unknown) => {
+      if (typeof wall !== 'string' || !/^-?\d+$/.test(wall)) throw new Error('Invalid meeting checkpoint time');
+      return timestamp(iso(BigInt(wall)));
+    };
+    const earliest = (times: ReturnType<typeof timestamp>[]) =>
+      times.reduce<ReturnType<typeof timestamp> | undefined>((first, time) =>
+        !first || compare(time.instant, first.instant) < 0 ? time : first, undefined);
 
-    let updated = agenda.time;
+    let checkpointed: ReturnType<typeof timestamp> | undefined;
     if (generation > 0) {
       const activity = generation === manifest.generation ? manifest : readManifest(files, generation);
       if (activity?.generation !== generation || activity.meetings[id] !== revision) {
         throw new Error('Invalid meeting checkpoint');
       }
-      const wall = activity.checkpoint.wall;
-      if (typeof wall !== 'string' || !/^-?\d+$/.test(wall)) throw new Error('Invalid meeting checkpoint time');
-      updated = timestamp(iso(BigInt(wall)));
-    } else {
+      checkpointed = checkpointTime(activity.checkpoint.wall);
+    }
+    // The original agenda's time is the creation time. PR-D: if it is quarantined, the earliest
+    // trusted activity stands in for it, and failing that the revision's checkpoint time.
+    const created = packets[0]?.time ?? earliest([...trusted.map(packet => packet.time), ...roundTimes(), ...auditTimes()]) ??
+      checkpointed ?? checkpointTime(manifest.checkpoint?.wall);
+
+    let updated = checkpointed ?? created;
+    if (generation === 0) {
       // Legacy revisions have no per-revision checkpoint wall time.
       const activity = [
-        ...packets.map(packet => packet.time),
-        ...meeting.audit.map(event => timestamp(event.at)),
-        ...meeting.rounds.map(round => timestamp(round.state.opened_at)),
+        ...trusted.map(packet => packet.time), ...auditTimes(), ...roundTimes(),
       ];
       updated = activity.reduce((latest, time) => compare(latest.instant, time.instant) < 0 ? time : latest, updated);
     }
@@ -81,7 +95,7 @@ function readSummary(files: StoreFiles, manifest: Manifest, id: string, revision
       activity: updated.instant,
       summary: {
         meeting_id: id, topic: meeting.topic, meeting_state: meeting.state,
-        created_at: agenda.time.value, updated_at: updated.value, seat_ids,
+        created_at: created.value, updated_at: updated.value, seat_ids,
       },
     };
   });

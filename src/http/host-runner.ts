@@ -34,7 +34,7 @@ const terminal = (state: MeetingState) => state === 'APPROVED' || state === 'REJ
 const inPipeline = (state: MeetingState) =>
   state === 'OPEN' || state === 'GATE' || state === 'SYNTHESIZING';
 
-function continuation(state: RunnerSnapshot) {
+export function continuation(state: RunnerSnapshot) {
   const round = state.round_states.at(-1);
   if (state.meeting_state === 'OPEN' && round?.phase === 'open') {
     const directed = state.directed?.round === round.round ? state.directed : null;
@@ -125,7 +125,8 @@ export class HostRunner {
       const addressed = state.seats.find(seat => seat.seat_id === mention.seat_id);
       if (!addressed) throw { code: 'not_found' };
       cliSeat(addressed);
-      await core.open_round(this.principal, { meeting_id, mention });
+      // The facade mention route records the note as the human's, addressed to the seat.
+      await core.openHumanMention(this.principal, { meeting_id, mention });
       return () => this.continueRun(meeting_id);
     });
   }

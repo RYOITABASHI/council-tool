@@ -50,17 +50,38 @@ function isExecutableFile(path: string): boolean {
   }
 }
 
+/** The one resolution rule shared by the startup assertion and /health: env overrides, then PATH. */
+function cliCommandResolvable(
+  env: NodeJS.ProcessEnv,
+  configs: ReturnType<typeof resolveCliConfigs>,
+  kind: 'codex' | 'claude',
+): { command: string; resolvable: boolean } {
+  const pathEntries = env.PATH?.split(delimiter) ?? [];
+  const command = configs[kind].command ?? CLI_PRESETS[kind].command;
+  const candidates = command.includes('/') ? [command] : pathEntries.map(entry => join(entry, command));
+  return { command, resolvable: candidates.some(isExecutableFile) };
+}
+
 export function assertCliCommandsResolvable(
   env: NodeJS.ProcessEnv,
   configs: ReturnType<typeof resolveCliConfigs>,
 ): void {
-  const pathEntries = env.PATH?.split(delimiter) ?? [];
   const kinds = env.COUNCIL_CLAUDE_COMMAND?.trim() ? ['codex', 'claude'] as const : ['codex'] as const;
   for (const kind of kinds) {
-    const command = configs[kind].command ?? CLI_PRESETS[kind].command;
-    const candidates = command.includes('/') ? [command] : pathEntries.map(entry => join(entry, command));
-    if (!candidates.some(isExecutableFile)) {
+    const { command, resolvable } = cliCommandResolvable(env, configs, kind);
+    if (!resolvable) {
       throw new Error(`CLI command for kind "${kind}" is not resolvable on PATH: ${command}`);
     }
   }
+}
+
+/** Report, without failing, whether each CLI seat kind can run on this host. */
+export function cliSeatKindAvailability(
+  env: NodeJS.ProcessEnv,
+  configs: ReturnType<typeof resolveCliConfigs>,
+): Record<'codex' | 'claude', boolean> {
+  return {
+    codex: cliCommandResolvable(env, configs, 'codex').resolvable,
+    claude: cliCommandResolvable(env, configs, 'claude').resolvable,
+  };
 }

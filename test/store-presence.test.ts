@@ -715,7 +715,11 @@ function convertToLegacy(legacy: string) {
       const revision = join(directory, name);
       const state = JSON.parse(readFileSync(revision, 'utf8'));
       delete state.generation;
-      for (const packet of state.packets) delete packet.packet_digest;
+      // Legacy revisions predate packet digests and note attribution (B3).
+      for (const packet of state.packets) {
+        delete packet.packet_digest;
+        delete packet.note;
+      }
       writeFileSync(revision, JSON.stringify(state));
       const legacy = join(directory, legacyName(name.slice(0, -5)) + '.json');
       if (legacy !== revision) renameSync(revision, legacy);

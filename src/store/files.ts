@@ -42,6 +42,20 @@ export function openRegular(path: string, flags = constants.O_RDONLY, mode?: num
   }
 }
 
+/** PR-D: best-effort parse of bytes already known to be untrusted; never tracked, never throws. */
+function untrustedJson(path: string): unknown {
+  try {
+    const fd = openRegular(path);
+    try {
+      return JSON.parse(readFileSync(fd, 'utf8')) as unknown;
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return undefined;
+  }
+}
+
 export function stageFile(path: string, bytes: string) {
   const temporary = path + '.' + randomUUID() + '.tmp';
   const fd = openRegular(temporary, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL, 0o600);
@@ -508,17 +522,34 @@ export class StoreFiles {
   }
 
   readPacket<T>(dir: StoreDirectory, name: string, expected?: string): T {
+    const read = this.readPacketOrQuarantine<T>(dir, name, expected);
+    if (!('value' in read)) throw new Error('Council store packet contents disagree with its receipt');
+    return read.value;
+  }
+
+  /**
+   * PR-D: like readPacket, but a packet whose bytes fail its receipt digest is reported as
+   * quarantined (with its untrusted parsed bytes, if any) instead of failing the whole load.
+   * Structural faults (missing or disagreeing receipts, identity changes) still throw.
+   */
+  readPacketOrQuarantine<T>(dir: StoreDirectory, name: string, expected?: string):
+    { value: T } | { quarantined: unknown } {
     const receipt = this.packetReceipt(dir, name);
     if (!receipt) {
       if (expected !== undefined) throw new Error('Council store packet receipt is missing');
-      return this.read<T>(dir, name, 'packet');
+      const raw = this.readBytes(dir, name, 'packet');
+      try {
+        return { value: JSON.parse(raw) as T };
+      } catch {
+        return { quarantined: undefined };
+      }
     }
     if (expected !== undefined && expected !== receipt.digest) throw new Error('Council store packet receipt disagrees');
     const bytes = this.verifiedBytes(dir, name, 'packet', receipt.digest, { singleLink: !receipt.adopted }) ??
       (receipt.adopted ? undefined :
         this.verifiedBytes(dir, '.packet-stage.' + receipt.attempt, 'packet stage', receipt.digest));
-    if (bytes === undefined) throw new Error('Council store packet contents disagree with its receipt');
-    return JSON.parse(bytes) as T;
+    if (bytes === undefined) return { quarantined: untrustedJson(join(dir.path, entryName(name))) };
+    return { value: JSON.parse(bytes) as T };
   }
 
   writePacket(dir: StoreDirectory, name: string, value: unknown, authorize: () => void,
