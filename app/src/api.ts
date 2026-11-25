@@ -1,6 +1,6 @@
 import type {
-  ApproveDecision, CreateMeetingRequest, CreateMeetingResponse, GetPacketsResponse, GetStateResponse,
-  MeetingData, MeetingSummary, MentionRequest, RunnerPhase, RunnerState,
+  ApproveDecision, CliSeatKinds, CreateMeetingRequest, CreateMeetingResponse, GetPacketsResponse, GetStateResponse,
+  MeetingData, MeetingSummary, MentionRequest, PairingClaim, RunnerPhase, RunnerState,
 } from './types';
 
 export type FacadeErrorKind = 'unreachable' | 'unauthorized' | 'not_found' | 'http';
@@ -192,4 +192,63 @@ export async function postApprove(
 
   // Some facades acknowledge the decision with only its terminal state.
   return withDeadline(signal => request<GetStateResponse>(`${url}/state`, token, signal, isMeetingState));
+}
+
+/** A GET or POST with no credentials and a short deadline; resolves to the parsed JSON body. */
+async function requestPublic(url: string, method: 'GET' | 'POST', timeoutMs: number): Promise<unknown> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    let response: Response;
+    try {
+      response = await fetch(url, { method, signal: controller.signal });
+    } catch {
+      throw new FacadeError('unreachable');
+    }
+    if (!response.ok) {
+      throw new FacadeError(response.status === 404 ? 'not_found' : 'http', response.status);
+    }
+    try {
+      return await response.json();
+    } catch {
+      throw new FacadeError(controller.signal.aborted ? 'unreachable' : 'http', response.status);
+    }
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
+}
+
+/**
+ * GET /health's CLI seat-kind availability. Resolves to undefined when the host cannot be read or
+ * does not report it (availability unknown — callers must not block on it).
+ */
+export async function fetchCliSeatKinds(baseUrl: string): Promise<CliSeatKinds | undefined> {
+  try {
+    const data = await requestPublic(`${baseUrl.trim().replace(/\/+$/, '')}/health`, 'GET', 5_000);
+    const kinds = isObject(data) ? data.cli_seat_kinds : undefined;
+    if (!isObject(kinds) || typeof kinds.codex !== 'boolean' || typeof kinds.claude !== 'boolean') return undefined;
+    return { codex: kinds.codex, claude: kinds.claude };
+  } catch {
+    return undefined;
+  }
+}
+
+/** The facade on this device, where the one-shot first-run pairing claim is answered. */
+export const PAIRING_CLAIM_URL = 'http://127.0.0.1:8790/pairing/claim';
+
+function isPairingClaim(data: unknown): data is PairingClaim {
+  return isObject(data) && typeof data.token === 'string' && data.token.trim() !== '' &&
+    typeof data.baseUrl === 'string' && /^https?:\/\/[^\s]+$/.test(data.baseUrl.trim());
+}
+
+/**
+ * One POST /pairing/claim. Throws FacadeError: 'unreachable' when the facade is not (yet) up,
+ * 'not_found' when it is up but not armed (or already claimed), 'http' otherwise.
+ * The token in the result must never be logged or shown.
+ */
+export async function claimPairing(): Promise<PairingClaim> {
+  const data = await requestPublic(PAIRING_CLAIM_URL, 'POST', 4_000);
+  if (!isPairingClaim(data)) throw new FacadeError('http');
+  return { baseUrl: data.baseUrl.trim(), token: data.token };
 }

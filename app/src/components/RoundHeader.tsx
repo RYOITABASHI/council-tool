@@ -134,8 +134,9 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.6 },
   divider: { flexDirection: 'row', alignItems: 'center', alignSelf: 'stretch' },
   rule: { flex: 1, height: StyleSheet.hairlineWidth },
-  pill: { flexShrink: 0, maxWidth: '92%', borderRadius: 14, paddingHorizontal: 14, paddingVertical: 4 },
-  label: { fontSize: 12.5, lineHeight: lineHeightFor(12.5), fontWeight: '600', textAlign: 'center' },
+  // LINE's date pill: dark grey, light text at about 11dp. Slack's divider pill: same size, outlined.
+  pill: { flexShrink: 0, maxWidth: '92%', borderRadius: 14, paddingHorizontal: 12, paddingVertical: 3 },
+  label: { fontSize: 11.5, lineHeight: lineHeightFor(11.5), fontWeight: '600', textAlign: 'center' },
   round: { fontWeight: '800' },
   phase: { fontWeight: '400' },
   summary: {

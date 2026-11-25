@@ -1,21 +1,28 @@
+import { createContext, useContext } from 'react';
 import { StyleSheet, useColorScheme } from 'react-native';
+import type { DisplayStyle } from '../storage';
 
-// Both themes lean toward a cool, blue-grey slate (Slack's #1A1D21 dark, LINE's slate announcement
-// bar) instead of a neutral grey; token roles are unchanged.
-const lightColors = {
-  page: '#F1F3F6',
+/*
+ * Two colour systems, one per display style (visual bundle, 2026-11-25): the line style follows LINE's
+ * neutral near-black (no blue cast), the thread style Slack's blue-tinted dark (#1A1D21). Each has a
+ * light version after the same app's light theme. Token roles are shared, so every component reads
+ * the same keys and only the active palette changes. Screens outside a meeting (session list,
+ * compose, settings, detail) use the line palette, LINE's talk list being their reference.
+ */
+const lineLight = {
+  page: '#FFFFFF',
   surface: '#FFFFFF',
   header: '#FFFFFF',
   listSurface: '#FFFFFF',
-  ink: '#1B232C',
-  muted: '#55606D',
-  border: '#D3D9E1',
+  ink: '#111111',
+  muted: '#6B6B6B',
+  border: '#E3E3E3',
   accent: '#00813A',
   accentText: '#007733',
   onAccent: '#FFFFFF',
-  pale: '#E0F0EA',
-  pressed: '#ECEFF4',
-  system: '#E6EAF0',
+  pale: '#E4F3E8',
+  pressed: '#F0F0F0',
+  system: '#EFEFEF',
   /** Initials on the saturated seat-avatar fills. */
   avatarInk: '#FFFFFF',
   amber: '#744B14',
@@ -24,34 +31,43 @@ const lightColors = {
   redBackground: '#FBE5E8',
   blue: '#21538A',
   violet: '#654386',
-  // LINE-style chat surfaces
-  chatBg: '#E9EDF2',
-  bubble: '#FFFFFF',
-  ownBubble: '#8DE385',
+  // Chat surfaces
+  chatBg: '#FFFFFF',
+  /** Other speakers' bubbles (line) and the bubble text colour on them. */
+  bubble: '#EFEFEF',
+  bubbleInk: '#111111',
+  /** The owner's own bubbles (line): pale green with dark text. */
+  ownBubble: '#A9E88F',
   ownInk: '#0B0B0B',
-  pill: 'rgba(30, 41, 59, 0.6)',
-  pillInk: '#FFFFFF',
-  inputBg: '#EDF0F4',
-  announce: '#F6F8FB',
+  /** Small out-of-bubble metadata: time, 既読, speaker names. */
+  meta: '#7A7A7A',
+  /** Centered round / date pill. */
+  pill: '#E6E6E6',
+  pillInk: '#3A3A3A',
+  /** Composer bar and its input field. */
+  composerBar: '#FFFFFF',
+  inputBg: '#F1F1F1',
+  announce: '#F3F5F8',
+  announceIcon: '#2F7CF6',
   mention: '#1D5FD1',
   mentionBackground: '#E1EBFB',
-  rail: '#CDD4DD',
+  rail: '#DCDCDC',
 };
 
-const darkColors: typeof lightColors = {
-  page: '#121418',
-  surface: '#272B33',
-  header: '#16181C',
-  listSurface: '#16181C',
-  ink: '#EEF0F3',
-  muted: '#AEB5C0',
-  border: '#2F343D',
+const lineDark: typeof lineLight = {
+  page: '#121212',
+  surface: '#232323',
+  header: '#121212',
+  listSurface: '#121212',
+  ink: '#EDEDED',
+  muted: '#9B9B9B',
+  border: '#2A2A2A',
   accent: '#00843C',
   accentText: '#42DF80',
   onAccent: '#FFFFFF',
-  pale: '#213029',
-  pressed: '#22262D',
-  system: '#22262C',
+  pale: '#1F2E24',
+  pressed: '#1E1E1E',
+  system: '#222222',
   avatarInk: '#FFFFFF',
   amber: '#FFD392',
   amberBackground: '#40301B',
@@ -59,18 +75,85 @@ const darkColors: typeof lightColors = {
   redBackground: '#44262B',
   blue: '#9CC9FF',
   violet: '#D7BAF7',
-  chatBg: '#1A1D21',
-  bubble: '#30353E',
-  ownBubble: '#8DE385',
+  chatBg: '#121212',
+  bubble: '#2E2E2E',
+  bubbleInk: '#FFFFFF',
+  ownBubble: '#A9E88F',
   ownInk: '#0B0B0B',
-  pill: '#2E343D',
-  pillInk: '#E3E7ED',
-  inputBg: '#262A31',
-  announce: '#2D3542',
+  meta: '#8E8E8E',
+  pill: '#262626',
+  pillInk: '#E6E6E6',
+  composerBar: '#121212',
+  inputBg: '#2A2A2A',
+  announce: '#2B323C',
+  announceIcon: '#4C8DF6',
   mention: '#7FA8FF',
-  mentionBackground: '#22304A',
-  rail: '#3A404A',
+  mentionBackground: '#24324A',
+  rail: '#333333',
 };
+
+const slackLight: typeof lineLight = {
+  ...lineLight,
+  page: '#FFFFFF',
+  surface: '#FFFFFF',
+  header: '#FFFFFF',
+  listSurface: '#FFFFFF',
+  ink: '#1D1C1D',
+  muted: '#616061',
+  border: '#DDDDDD',
+  accent: '#007A5A',
+  accentText: '#007A5A',
+  pale: '#E3F1EC',
+  pressed: '#F4F4F4',
+  system: '#F2F2F2',
+  chatBg: '#FFFFFF',
+  bubble: '#FFFFFF',
+  bubbleInk: '#1D1C1D',
+  meta: '#616061',
+  pill: '#FFFFFF',
+  pillInk: '#1D1C1D',
+  composerBar: '#FFFFFF',
+  inputBg: '#FFFFFF',
+  announce: '#F4F4F4',
+  announceIcon: '#1264A3',
+  /** Slack mention: link blue on a pale blue chip. */
+  mention: '#1264A3',
+  mentionBackground: '#E8F5FA',
+  rail: '#DDDDDD',
+};
+
+const slackDark: typeof lineLight = {
+  ...lineDark,
+  page: '#1A1D21',
+  surface: '#222529',
+  header: '#1A1D21',
+  listSurface: '#1A1D21',
+  ink: '#E8E8E8',
+  muted: '#ABABAD',
+  border: '#35373B',
+  accent: '#007A5A',
+  accentText: '#2BAC76',
+  pale: '#1D3A31',
+  pressed: '#222529',
+  system: '#222529',
+  chatBg: '#1A1D21',
+  bubble: '#1A1D21',
+  bubbleInk: '#E8E8E8',
+  meta: '#ABABAD',
+  /** Date divider pill and reaction-style chips: dark grey. */
+  pill: '#2C2F33',
+  pillInk: '#E8E8E8',
+  composerBar: '#222529',
+  inputBg: '#222529',
+  announce: '#222529',
+  announceIcon: '#1D9BD1',
+  /** Slack mobile mention: deep blue chip, light-blue text. */
+  mention: '#5DB7EC',
+  mentionBackground: '#173A58',
+  rail: '#35373B',
+};
+
+export type ThemeColors = typeof lineLight;
 
 /**
  * Line height for a font size. CJK fallback fonts (Noto Sans CJK) need about 1.45em of
@@ -82,14 +165,16 @@ export function lineHeightFor(fontSize: number): number {
 }
 
 /**
- * Line height for statement bodies (bubbles and thread posts): one step looser than lineHeightFor,
- * closer to the reading rhythm of LINE / Slack. Still proportional, and never below lineHeightFor.
+ * Line height for statement bodies. LINE's bubbles read at about 1.35–1.4, but B1 (no half-clipped
+ * CJK lines) wins: the line style stays at lineHeightFor's 1.5, above the 1.45 floor kept until a
+ * device screenshot proves a tighter value safe. Slack's mobile body is looser (about 1.6).
+ * Proportional, and never below lineHeightFor.
  */
-export function bodyLineHeightFor(fontSize: number): number {
-  return Math.ceil(fontSize * 1.65);
+export function bodyLineHeightFor(fontSize: number, variant: DisplayStyle = 'line'): number {
+  return Math.max(lineHeightFor(fontSize), Math.ceil(fontSize * (variant === 'slack' ? 1.6 : 1.5)));
 }
 
-function makeUi(colors: typeof lightColors) {
+function makeUi(colors: ThemeColors) {
   return StyleSheet.create({
     body: { fontSize: 15, lineHeight: lineHeightFor(15), color: colors.ink },
     muted: { fontSize: 13, lineHeight: lineHeightFor(13), color: colors.muted },
@@ -121,15 +206,28 @@ function makeUi(colors: typeof lightColors) {
   });
 }
 
-const lightTheme = { colors: lightColors, ui: makeUi(lightColors) };
-const darkTheme = { colors: darkColors, ui: makeUi(darkColors) };
-
-export function useTheme() {
-  return useColorScheme() === 'dark' ? darkTheme : lightTheme;
+function makeTheme(colors: ThemeColors) {
+  return { colors, ui: makeUi(colors) };
 }
 
-export function useThemeColors() {
-  return useTheme().colors;
+const themes = {
+  line: { light: makeTheme(lineLight), dark: makeTheme(lineDark) },
+  slack: { light: makeTheme(slackLight), dark: makeTheme(slackDark) },
+} as const;
+
+/** The display style whose colour system the subtree draws in (the meeting screen sets it). */
+const ThemeStyleContext = createContext<DisplayStyle>('line');
+export const ThemeStyleProvider = ThemeStyleContext.Provider;
+
+/** The active theme: the given style, else the surrounding ThemeStyleProvider's, in the system scheme. */
+export function useTheme(variant?: DisplayStyle) {
+  const contextStyle = useContext(ThemeStyleContext);
+  const scheme = useColorScheme() === 'dark' ? 'dark' : 'light';
+  return themes[variant ?? contextStyle][scheme];
+}
+
+export function useThemeColors(variant?: DisplayStyle) {
+  return useTheme(variant).colors;
 }
 
 export function formatTime(value: string): string {

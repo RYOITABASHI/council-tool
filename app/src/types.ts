@@ -141,6 +141,30 @@ export interface PacketEntry<K extends PacketKind = PacketKind> {
   };
   missing_records: MissingRecord[];
   declared_missing_records: DeclaredMissingRecord[];
+  /**
+   * B3, note packets only: who posted the note. Absent on older facades/data; null when the
+   * facade holds no (valid) attribution for it.
+   */
+  origin?: NoteOrigin | null;
+  /** B3, note packets only: the seat the note is addressed to, if any. */
+  addressee?: string | null;
+}
+
+export interface NoteOrigin {
+  kind: 'human' | 'chair';
+  principal: string;
+}
+
+/** GET /health: whether this host can run each CLI seat kind. */
+export interface CliSeatKinds {
+  codex: boolean;
+  claude: boolean;
+}
+
+/** POST /pairing/claim: where to connect afterwards and with which token. */
+export interface PairingClaim {
+  baseUrl: string;
+  token: string;
 }
 
 export interface GetPacketsResponse {

@@ -4,7 +4,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { describeFacadeError, FacadeError, fetchMeeting } from '../api';
 import { reasonLabel, receptionLabels } from '../components/RoundHeader';
-import { SeatAvatar } from '../components/SeatAvatar';
+import { SeatAvatar, SeatRosterProvider } from '../components/SeatAvatar';
 import { formatTime, useTheme } from '../components/styles';
 import { loadFixtureMeeting } from '../fixtures';
 import { receptionRowsForRound, supersededInfo } from '../model';
@@ -79,7 +79,8 @@ function PacketLog({ data, entry }: { data: MeetingData; entry: PacketEntry }) {
     <ScrollView contentContainerStyle={styles.scroll}>
       <SafeAreaView edges={['left', 'right', 'bottom']} style={styles.log}>
         <View style={styles.seatRow}>
-          <SeatAvatar seat={seat} />
+          {/* Same marks as the meeting screen: from the seat's kind, with the same distinguisher. */}
+          <SeatRosterProvider seats={data.state.seats}><SeatAvatar seat={seat} /></SeatRosterProvider>
           <View style={styles.seatInfo}>
             <Text style={ui.title}>{seat}</Text>
             <Text style={ui.muted}>{[round, kindLabels[kind], formatTime(created_at)].filter(Boolean).join(' ・ ')}</Text>

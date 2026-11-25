@@ -6,10 +6,13 @@ import {
 import { FacadeError, facadeErrorMessages, fetchMeeting, fetchMeetings } from '../api';
 import type { FacadeErrorKind } from '../api';
 import { ChatHeader, HeaderIcon } from '../components/ChatHeader';
-import { seatColor, seatInitials } from '../components/SeatAvatar';
+import { LogoMark, seatColor, seatInitials, seatMarks } from '../components/SeatAvatar';
+import type { RosterSeat } from '../components/SeatAvatar';
+import { logoDiscs } from '../components/logos/paths';
 import { statementLead } from '../components/statementLead';
 import { formatTime, lineHeightFor, useTheme } from '../components/styles';
 import { loadFixtureMeeting, loadFixtureMeetings } from '../fixtures';
+import { pairIfUnconfigured } from '../pairing';
 import { loadSettings } from '../storage';
 import { isPacketKind } from '../types';
 import type { MeetingData, MeetingState, MeetingSummary } from '../types';
@@ -76,16 +79,47 @@ function latestPreview({ packets }: MeetingData): Preview | undefined {
 type Source = 'facade' | 'fixture';
 type SessionList = { source: Source; meetings: MeetingSummary[] };
 type Previews = Record<string, Preview | undefined>;
+/** Each meeting's seats with their kinds (get_state's role), from the same read as the preview. */
+type Rosters = Record<string, readonly RosterSeat[] | undefined>;
 type Section = { key: Group; title: string; data: MeetingSummary[] };
 
 
-function GroupAvatar({ seatIds }: { seatIds: string[] }) {
+/**
+ * Where a cell's suffix badge goes, relative to the cell's padding box: centred on the cell's point
+ * nearest the collage's centre and clamped inside the cell, so the badge always lies well inside the
+ * circular crop (its farthest corner stays within the circle). A tall half cell puts it below the
+ * mark instead; in a quarter cell it only overlaps the mark's inner corner, never its centre. A lone seat fills the whole circle, so
+ * its badge sits a sixth of the way toward the lower right instead of covering the mark's centre.
+ */
+function badgeOffset(column: number, columns: number, row: number, rows: number, badge: number, inset: number) {
+  const width = avatarSize / columns;
+  const height = avatarSize / rows;
+  const centre = avatarSize / 2;
+  const left = column * width;
+  const top = row * height;
+  const nearest = { x: Math.min(Math.max(centre, left), left + width), y: Math.min(Math.max(centre, top), top + height) };
+  const target = columns === 1 && rows === 1
+    ? { x: centre + avatarSize / 6, y: centre + avatarSize / 6 }
+    // A tall half cell (two seats): below the mark, on the inner edge, so it never covers the mark.
+    : height > width ? { x: nearest.x, y: top + height * 0.75 }
+    : nearest;
+  const clamp = (value: number, max: number) => Math.min(Math.max(value, 0), max);
+  return {
+    left: clamp(target.x - left - inset - badge / 2, width - 2 * inset - badge),
+    top: clamp(target.y - top - inset - badge / 2, height - 2 * inset - badge),
+  };
+}
+
+function GroupAvatar({ seatIds, roster }: { seatIds: string[]; roster?: readonly RosterSeat[] }) {
   const { colors } = useTheme();
   const seats = seatIds.slice(0, 4);
+  // Group the visible seats in display order, using any roles available from the meeting roster.
+  const marks = seatMarks(seats.map(seat_id => roster?.find(seat => seat.seat_id === seat_id) ?? { seat_id }));
   // LINE renders a member collage inside one circle when a group has no picture.
   const columns = seats.length <= 1 ? [seats] : seats.length === 2 ? [[seats[0]], [seats[1]]]
     : seats.length === 3 ? [[seats[0]], [seats[1], seats[2]]] : [[seats[0], seats[2]], [seats[1], seats[3]]];
   const size = seats.length <= 1 ? 22 : seats.length === 2 ? 17 : 14;
+  const cell = seats.length <= 1 ? avatarSize : avatarSize / 2;
   return (
     <View style={[styles.avatar, { backgroundColor: colors.pale }]} aria-hidden>
       {columns.map((column, x) => (
@@ -94,12 +128,35 @@ function GroupAvatar({ seatIds }: { seatIds: string[] }) {
             const initials = seatInitials(id);
             // Two-character initials (codex-a → Ca) get a smaller face so they fit a quarter cell.
             const fontSize = Array.from(initials).length > 1 ? Math.round(size * 0.8) : size;
+            const { logo, tag: suffix } = marks.get(id) ?? {};
+            const ring = suffix !== undefined ? seatColor(id) : undefined;
+            const badge = Math.max(10, Math.round(cell * (seats.length <= 1 ? 0.3 : 0.42)));
             return (
-              <View key={id} style={[styles.avatarCell, { backgroundColor: seatColor(id) },
+              <View key={id} style={[styles.avatarCell, { backgroundColor: logo ? logoDiscs[logo] : seatColor(id) },
+                ring !== undefined && { borderWidth: ringWidth, borderColor: ring },
                 y > 0 && { borderTopColor: colors.listSurface, borderTopWidth: 1 }]}>
-                <Text numberOfLines={1} style={[styles.avatarInitial, { color: colors.avatarInk, fontSize }]}>
-                  {initials}
-                </Text>
+                {/* Same grammar as the meeting avatar: the white mark on the provider's disc; seats sharing
+                    a mark add a ring and a distinguisher badge (suffix, else position) in the seat's own colour. */}
+                {logo ? (
+                  <>
+                    <LogoMark name={logo} size={Math.round(cell * (ring ? 0.44 : 0.5))} />
+                    {/* The badge overlays the cell (see badgeOffset) instead of sharing its width with the
+                        mark, so even a quarter cell (about 22dp inside) never squeezes the suffix. Decorative
+                        (the collage is hidden from screen readers), so it keeps its size at large
+                        font scales rather than outgrowing the cell. */}
+                    {suffix !== undefined && ring !== undefined && (
+                      <View style={[styles.cellBadge, { minWidth: badge, height: badge, borderRadius: badge / 2, backgroundColor: ring },
+                        badgeOffset(x, columns.length, y, column.length, badge, ringWidth)]}>
+                        <Text numberOfLines={1} allowFontScaling={false} style={[styles.cellSuffix, { color: colors.avatarInk,
+                          fontSize: Math.max(7, Math.round(badge * 0.62)) }]}>{suffix}</Text>
+                      </View>
+                    )}
+                  </>
+                ) : (
+                  <Text numberOfLines={1} style={[styles.avatarInitial, { color: colors.avatarInk, fontSize }]}>
+                    {initials}
+                  </Text>
+                )}
               </View>
             );
           })}
@@ -122,7 +179,9 @@ function StatePill({ state }: { state: MeetingState }) {
   );
 }
 
-function SessionRow({ meeting, source, preview }: { meeting: MeetingSummary; source: Source; preview?: Preview }) {
+function SessionRow({ meeting, source, preview, roster }: {
+  meeting: MeetingSummary; source: Source; preview?: Preview; roster?: readonly RosterSeat[];
+}) {
   const { colors, ui } = useTheme();
   const timestamp = meetingDate(meeting.updated_at || meeting.created_at);
   const seatPreview = meeting.seat_ids.join('・');
@@ -130,14 +189,15 @@ function SessionRow({ meeting, source, preview }: { meeting: MeetingSummary; sou
     <Pressable accessibilityRole="button"
       onPress={() => router.push({ pathname: '/meeting', params: { source, meetingId: meeting.meeting_id } })}
       style={({ pressed }) => [styles.row, { backgroundColor: pressed ? colors.pressed : colors.listSurface }]}>
-      <GroupAvatar seatIds={meeting.seat_ids} />
+      <GroupAvatar seatIds={meeting.seat_ids} roster={roster} />
       <View style={styles.details}>
         {/* Title (with its seat count) and preview fill the row and end in "…" when too long. */}
         <Text numberOfLines={1} style={[ui.body, styles.topic]}>
           {meeting.topic}
           {meeting.seat_ids.length > 1 && <Text>{` (${meeting.seat_ids.length})`}</Text>}
         </Text>
-        <Text numberOfLines={1} style={[ui.muted, styles.preview]}>
+        {/* LINE's talk list: the preview runs to two grey lines. */}
+        <Text numberOfLines={2} style={[ui.muted, styles.preview]}>
           {preview ? `${preview.seat ? `${preview.seat}：` : ''}${preview.text}` : seatPreview}
         </Text>
       </View>
@@ -163,6 +223,7 @@ export default function SessionsScreen() {
   const { colors, ui } = useTheme();
   const [list, setList] = useState<SessionList>();
   const [previews, setPreviews] = useState<Previews>({});
+  const [rosters, setRosters] = useState<Rosters>({});
   const [error, setError] = useState<FacadeErrorKind>();
   const [loading, setLoading] = useState(true);
   const [useSamples, setUseSamples] = useState(false);
@@ -175,6 +236,10 @@ export default function SessionsScreen() {
 
     async function load() {
       try {
+        // First run with nothing saved: claim the connection from this device's facade (no-op once
+        // settings exist, and at most once per launch). Samples mode never claims.
+        if (!useSamples) await pairIfUnconfigured();
+        if (!focused) return;
         const { facadeUrl, token } = await loadSettings();
         if (!focused) return;
         const source = !useSamples && facadeUrl.trim() ? 'facade' : 'fixture';
@@ -185,19 +250,26 @@ export default function SessionsScreen() {
         setList({ source, meetings });
         if (source === 'fixture') {
           const next: Previews = {};
+          const nextRosters: Rosters = {};
           for (const { meeting_id: id } of meetings) {
             const data = loadFixtureMeeting(id);
             next[id] = data ? latestPreview(data) : undefined;
+            nextRosters[id] = data?.state.seats;
           }
           setPreviews(next);
+          setRosters(nextRosters);
         } else {
           // Best-effort previews from the existing meeting read; on failure the
           // row falls back to its seat list (any stale preview is cleared).
           for (const { meeting_id: id } of meetings) {
             void fetchMeeting(facadeUrl, token, id).then(data => {
-              if (focused) setPreviews(current => ({ ...current, [id]: latestPreview(data) }));
+              if (!focused) return;
+              setPreviews(current => ({ ...current, [id]: latestPreview(data) }));
+              setRosters(current => ({ ...current, [id]: data.state.seats }));
             }, () => {
-              if (focused) setPreviews(current => ({ ...current, [id]: undefined }));
+              if (!focused) return;
+              setPreviews(current => ({ ...current, [id]: undefined }));
+              setRosters(current => ({ ...current, [id]: undefined }));
             });
           }
         }
@@ -251,7 +323,8 @@ export default function SessionsScreen() {
           style={{ backgroundColor: colors.listSurface }}
           sections={sectionsOf(list.meetings)}
           keyExtractor={item => item.meeting_id}
-          renderItem={({ item }) => <SessionRow meeting={item} source={list.source} preview={previews[item.meeting_id]} />}
+          renderItem={({ item }) => <SessionRow meeting={item} source={list.source} preview={previews[item.meeting_id]}
+            roster={rosters[item.meeting_id]} />}
           renderSectionHeader={({ section }) => (
             <Text accessibilityRole="header" style={[ui.muted, styles.sectionTitle, { backgroundColor: colors.listSurface }]}>
               {section.title}  {section.data.length}
@@ -274,21 +347,30 @@ export default function SessionsScreen() {
   );
 }
 
+const avatarSize = 54;
+/** Ring around a sibling seat's collage cell. */
+const ringWidth = 2;
+
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   list: { width: '100%', maxWidth: 800, alignSelf: 'center', paddingBottom: 8 },
   sectionTitle: { fontSize: 12, fontWeight: '600', paddingHorizontal: 18, paddingTop: 14, paddingBottom: 4 },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 15, paddingVertical: 13, paddingHorizontal: 18 },
-  avatar: { width: 52, height: 52, borderRadius: 26, overflow: 'hidden', flexDirection: 'row' },
+  // LINE talk list: row padding about 12, avatar 54 circle, title 16, preview 14 grey (two lines),
+  // time about 12 grey at the top right.
+  row: { flexDirection: 'row', alignItems: 'flex-start', gap: 14, paddingVertical: 12, paddingHorizontal: 16 },
+  avatar: { width: avatarSize, height: avatarSize, borderRadius: avatarSize / 2, overflow: 'hidden', flexDirection: 'row' },
   avatarColumn: { flex: 1 },
   avatarCell: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   // Stretches across its cell, so the initials are never boxed to their exact measured width.
+  cellBadge: { position: 'absolute', alignItems: 'stretch', justifyContent: 'center', paddingHorizontal: 1 },
+  // Stretched across the badge (which has a minimum width), so the suffix is never boxed to an exact fit.
+  cellSuffix: { textAlign: 'center', fontWeight: '800', includeFontPadding: false },
   avatarInitial: { alignSelf: 'stretch', textAlign: 'center', fontWeight: '800', includeFontPadding: false },
-  details: { flex: 1, minWidth: 0, gap: 3 },
-  side: { flexShrink: 0, alignItems: 'stretch', gap: 5 },
-  topic: { fontSize: 16, fontWeight: '600', lineHeight: lineHeightFor(16) },
-  timestamp: { fontSize: 11.5, lineHeight: lineHeightFor(11.5), fontVariant: ['tabular-nums'], textAlign: 'right' },
-  preview: { fontSize: 13.5, lineHeight: lineHeightFor(13.5) },
+  details: { flex: 1, minWidth: 0, gap: 2, paddingTop: 3 },
+  side: { flexShrink: 0, alignItems: 'stretch', gap: 6, paddingTop: 5 },
+  topic: { fontSize: 16, fontWeight: '700', lineHeight: lineHeightFor(16) },
+  timestamp: { fontSize: 12, lineHeight: lineHeightFor(12), fontVariant: ['tabular-nums'], textAlign: 'right' },
+  preview: { fontSize: 14, lineHeight: lineHeightFor(14) },
   pill: {
     textAlign: 'center',
     overflow: 'hidden', borderRadius: 10, fontSize: 10.5, lineHeight: lineHeightFor(10.5), fontWeight: '600',
