@@ -9,6 +9,7 @@ import type { runCli } from '../drivers/index.js';
 import { assertCliCommandsResolvable, cliSeatKindAvailability, resolveCliConfigs } from './cli-config.js';
 import { HostRunner, isCliSeatKind } from './host-runner.js';
 import { createMeetingViews } from './meeting-views.js';
+import { createPairing, isClaimRequestAllowed, pairingBaseUrl } from './pairing.js';
 
 function sendJson(response: ServerResponse, status: number, body: unknown) {
   response.writeHead(status, {
@@ -69,12 +70,23 @@ export function createConfiguredHttpServer(env: NodeJS.ProcessEnv = process.env,
   const views = createMeetingViews(env);
   const cliConfigs = resolveCliConfigs(env);
   const runner = new HostRunner(views.getCore, views.principal, options.runCli, cliConfigs);
+  const pairing = createPairing(env, token);
 
   const server = createServer(async (request, response) => {
     const path = request.url?.split('?', 1)[0] ?? '';
     if (request.method === 'GET' && path === '/health') {
       // CLI seat kinds only (codex / claude); api and local kinds are not claimed here.
       return sendJson(response, 200, { ok: true, cli_seat_kinds: cliSeatKindAvailability(env, cliConfigs) });
+    }
+
+    // Requests that fail the claim guards use the same auth and routing as an unknown path.
+    if (request.method === 'POST' && path === '/pairing/claim' && isClaimRequestAllowed(request)) {
+      if (!pairing.claim()) {
+        return sendJson(response, 404, { code: 'not_found' });
+      }
+      const address = server.address();
+      const bound = address !== null && typeof address === 'object' ? address : null;
+      return sendJson(response, 200, { baseUrl: pairingBaseUrl(bound, env), token });
     }
 
     const authorization = Buffer.from(request.headers.authorization ?? '');

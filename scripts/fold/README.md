@@ -60,6 +60,29 @@ The default state file, `$COUNCIL_HOME/facade-watch.state`, records `last_check`
 in UTC, the number of restart attempts in `restarts`, and the UTC time of the
 last attempt in `last_restart` (empty until the first attempt).
 
+## First-run pairing
+
+`start-facade.sh` (and therefore `run-facade.sh` and watchdog restarts)
+exports `COUNCIL_PAIRING_ARM=1` unless it is already set. The facade then
+arms a one-shot `POST /pairing/claim` endpoint, but only when
+`$COUNCIL_HOME/pairing-claimed/` holds no record for the current token. While
+armed, the first claim made over loopback (loopback peer, loopback `Host`, no
+browser `Origin`/`Sec-Fetch-Site`) receives `{"baseUrl": ..., "token": ...}`;
+the claim is recorded, and later requests that pass the claim guards get
+`404`, including after restarts and from a second facade on the same home.
+Requests that fail the guards are handled like unknown paths (`401` without
+valid Bearer credentials, `404` with valid credentials). A new token re-arms on
+the next start. Each record is one file named by a one-way token fingerprint.
+The claim record contains only the claimed flag and fingerprint. The facade
+never automatically hands out the same token twice.
+
+To recover pairing after reinstalling the app, the device owner resets the
+pairing state by deleting the record for the current token from
+`$COUNCIL_HOME/pairing-claimed/`. Then restart the facade and open the app.
+If the filesystem cannot sync directories, use manual setup. Set
+`COUNCIL_PAIRING_ARM=0` to opt out. On hosts without the app the arm is simply
+never used.
+
 When the Shelly `termux-libs` directory exists, the launcher prepends it to
 `LD_LIBRARY_PATH` so the Android linker can find `libz.so.1` during detached
 launches. Set `COUNCIL_TERMUX_LIBS` if the directory is installed elsewhere.
