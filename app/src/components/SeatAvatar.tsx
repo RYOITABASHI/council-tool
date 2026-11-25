@@ -1,4 +1,10 @@
+import { createContext, useContext, useMemo } from 'react';
+import type { ReactNode } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
+import Svg, { Path } from 'react-native-svg';
+import { logoDiscs, logoPaths } from './logos/paths';
+import type { LogoName } from './logos/paths';
+import { useTheme } from './styles';
 
 type Props = { seat: string; size?: number; shape?: 'circle' | 'rounded' };
 
@@ -157,17 +163,145 @@ export function initialsFontSize(initials: string, size: number, minimum = 11): 
   return Math.max(minimum, Math.round(size * ratio));
 }
 
+/**
+ * The provider mark a seat is drawn with, from its stem: codex / gpt / openai seats → OpenAI,
+ * claude / anthropic seats → Anthropic. Other seats (the chair, people, web, local models) have no
+ * mark and keep their initials.
+ */
+export function seatLogo(seat: string): LogoName | undefined {
+  const stem = splitSeat(seat).stem.toLowerCase();
+  if (/^(codex|gpt|openai|chatgpt)/.test(stem)) return 'openai';
+  if (/^(claude|anthropic)/.test(stem)) return 'anthropic';
+  return undefined;
+}
+
+/** The trailing suffix that tells sibling seats apart (codex-a → a), if any. */
+export function seatSuffix(seat: string): string | undefined {
+  return splitSeat(seat).suffix?.toLowerCase();
+}
+
+/** A seat as the meeting data lists it: get_state's `role` carries the seat kind (codex-cli, …). */
+export type RosterSeat = { seat_id: string; role?: string };
+
+/** How a seat is drawn: its provider mark, and the distinguisher shown in its badge (with a ring). */
+export type SeatMark = { logo?: LogoName; tag?: string };
+
+/**
+ * The seat kind determines its provider mark. API, local, and unknown kinds keep their initials.
+ * When the role is absent, infer the mark from the seat ID.
+ */
+export function seatLogoFor(seat: RosterSeat): LogoName | undefined {
+  if (seat.role === undefined) return seatLogo(seat.seat_id);
+  if (seat.role === 'codex-cli') return 'openai';
+  if (seat.role === 'claude-code-cli') return 'anthropic';
+  return undefined;
+}
+
+/**
+ * Marks for a meeting's seats, in roster order. Seats that share a provider mark always get a
+ * distinguisher, decided per seat: its suffix when it has one (codex-a → a), otherwise its 1-based
+ * position among that mark's seats in roster order (codex-a, codex → a, 2). Tags stay unique within
+ * a mark: a suffix shared by two seats (codex-a, codex-A) counts as no suffix for both, and a
+ * position already taken by a suffix (codex-2, codex → 2, …) moves to the next free number.
+ * A lone seat with a mark keeps its suffix badge if it has one.
+ */
+export function seatMarks(seats: readonly RosterSeat[]): Map<string, SeatMark> {
+  const marks = new Map<string, SeatMark>();
+  const groups = new Map<LogoName, string[]>();
+  for (const seat of seats) {
+    if (marks.has(seat.seat_id)) continue;
+    const logo = seatLogoFor(seat);
+    marks.set(seat.seat_id, { logo });
+    if (logo) groups.set(logo, [...(groups.get(logo) ?? []), seat.seat_id]);
+  }
+  for (const ids of groups.values()) {
+    if (ids.length === 1) {
+      marks.set(ids[0], { ...marks.get(ids[0]), tag: seatSuffix(ids[0]) });
+      continue;
+    }
+    const suffixes = ids.map(seatSuffix);
+    const tags = suffixes.map(suffix =>
+      suffix !== undefined && suffixes.filter(other => other === suffix).length === 1 ? suffix : undefined);
+    const used = new Set(tags.filter((tag): tag is string => tag !== undefined));
+    ids.forEach((id, index) => {
+      let tag = tags[index];
+      if (tag === undefined) {
+        let position = index + 1;
+        while (used.has(String(position))) position += 1;
+        tag = String(position);
+        used.add(tag);
+      }
+      marks.set(id, { ...marks.get(id), tag });
+    });
+  }
+  return marks;
+}
+
+const SeatRosterContext = createContext<Map<string, SeatMark> | undefined>(undefined);
+
+/** Gives every SeatAvatar below the meeting's roster, so marks follow the kinds and distinguishers. */
+export function SeatRosterProvider({ seats, children }: { seats: readonly RosterSeat[]; children: ReactNode }) {
+  const marks = useMemo(() => seatMarks(seats), [seats]);
+  return <SeatRosterContext.Provider value={marks}>{children}</SeatRosterContext.Provider>;
+}
+
+/** A seat's mark from the surrounding roster; a seat outside it (or no roster) is judged on its own ID. */
+export function useSeatMark(seat: string): SeatMark {
+  const marks = useContext(SeatRosterContext);
+  return marks?.get(seat) ?? seatMarks([{ seat_id: seat }]).get(seat)!;
+}
+
+/** A provider mark in white, sized to a box. */
+export function LogoMark({ name, size }: { name: LogoName; size: number }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
+      <Path d={logoPaths[name]} fill="#FFFFFF" />
+    </Svg>
+  );
+}
+
+/** Background of a seat's avatar: the provider's disc for a seat with a mark, else the seat colour. */
+export function seatFill(seat: string): string {
+  const logo = seatLogo(seat);
+  return logo ? logoDiscs[logo] : seatColor(seat);
+}
+
+/**
+ * Seat avatar. A seat with a provider mark shows the white mark on the provider's disc; seats sharing
+ * a mark add a ring and a distinguisher badge (see `seatMarks`) in the seat's own colour, so they
+ * stay apart at a glance. Seats without a mark keep their initials on the seat colour.
+ * Circle (line style) or rounded square (thread style, Slack's corner of about a quarter of the side).
+ */
 export function SeatAvatar({ seat, size = 40, shape = 'circle' }: Props) {
-  const radius = shape === 'circle' ? size / 2 : Math.round(size * 0.22);
+  const { colors } = useTheme();
+  const radius = shape === 'circle' ? size / 2 : Math.round(size * 0.26);
+  const { logo, tag: suffix } = useSeatMark(seat);
+  const ring = suffix !== undefined ? seatColor(seat) : undefined;
   const initials = seatInitials(seat);
+  const ringWidth = Math.max(2, Math.round(size * 0.06));
+  const badge = Math.max(14, Math.round(size * 0.42));
 
   return (
-    <View style={[styles.avatar, {
-      width: size, height: size, borderRadius: radius, backgroundColor: seatColor(seat),
-    }]} aria-hidden>
-      <Text numberOfLines={1} style={[styles.initials, { fontSize: initialsFontSize(initials, size) }]}>
-        {initials}
-      </Text>
+    <View style={{ width: size, height: size }} aria-hidden>
+      <View style={[styles.avatar, {
+        width: size, height: size, borderRadius: radius, backgroundColor: logo ? logoDiscs[logo] : seatColor(seat),
+      }, ring !== undefined && { borderWidth: ringWidth, borderColor: ring }]}>
+        {logo ? <LogoMark name={logo} size={Math.round(size * (ring ? 0.5 : 0.56))} /> : (
+          <Text numberOfLines={1} style={[styles.initials, { fontSize: initialsFontSize(initials, size) }]}>
+            {initials}
+          </Text>
+        )}
+      </View>
+      {suffix !== undefined && ring !== undefined && (
+        <View style={[styles.badge, {
+          minWidth: badge, height: badge, borderRadius: badge / 2, backgroundColor: ring,
+          borderColor: colors.chatBg, right: -Math.round(badge * 0.2), bottom: -Math.round(badge * 0.2),
+        }]}>
+          <Text numberOfLines={1} style={[styles.badgeText, { fontSize: Math.max(8, Math.round(badge * 0.6)) }]}>
+            {suffix}
+          </Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -176,4 +310,9 @@ const styles = StyleSheet.create({
   avatar: { alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
   // Stretches across the avatar so the initials are never boxed to their exact measured width.
   initials: { alignSelf: 'stretch', textAlign: 'center', color: '#FFFFFF', fontWeight: '800', includeFontPadding: false },
+  badge: {
+    position: 'absolute', borderWidth: 1.5, paddingHorizontal: 2, alignItems: 'stretch', justifyContent: 'center',
+  },
+  // Stretched across the badge (which has a minimum width), so the suffix is never boxed to an exact fit.
+  badgeText: { textAlign: 'center', color: '#FFFFFF', fontWeight: '800', includeFontPadding: false },
 });

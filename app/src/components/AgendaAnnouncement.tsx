@@ -13,7 +13,7 @@ export function AgendaAnnouncement({ entry }: { entry: PacketEntry<'agenda'> }) 
     <Pressable accessibilityRole="button" accessibilityLabel={`アジェンダ：${topic}`}
       accessibilityState={{ expanded }} onPress={() => setExpanded(value => !value)}
       style={[styles.bar, { backgroundColor: colors.announce, shadowColor: '#000' }]}>
-      <Megaphone color={colors.mention} />
+      <Megaphone color={colors.announceIcon} />
       <View style={styles.text}>
         {/* Separate keyed texts so the native view is rebuilt on toggle: reusing the one-line
             view across the switch could keep its old one-line height and clip the expanded topic. */}
@@ -26,7 +26,7 @@ export function AgendaAnnouncement({ entry }: { entry: PacketEntry<'agenda'> }) 
           <Text selectable key={index} style={ui.muted}>{material}</Text>
         ))}
       </View>
-      <Text style={[styles.chevron, { color: colors.muted }]} aria-hidden>{expanded ? '︿' : '﹀'}</Text>
+      <Text style={[styles.chevron, { color: colors.muted }]} aria-hidden>{expanded ? '︿' : '›'}</Text>
     </Pressable>
   );
 }
@@ -61,5 +61,6 @@ const styles = StyleSheet.create({
   handle: { position: 'absolute', left: 3, top: lineHeightFor(14.5) / 2 + 3, width: 3, height: 5, borderRadius: 1 },
   text: { flex: 1, minWidth: 0, gap: 4 },
   topic: { fontSize: 14.5, lineHeight: lineHeightFor(14.5), fontWeight: '600' },
-  chevron: { fontSize: 14, lineHeight: lineHeightFor(14.5) },
+  // LINE: a chevron on the right of the bar (› while collapsed; ︿ closes the expanded topic).
+  chevron: { width: 16, textAlign: 'center', fontSize: 16, lineHeight: lineHeightFor(16), marginTop: -1 },
 });

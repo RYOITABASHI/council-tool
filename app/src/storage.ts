@@ -61,6 +61,22 @@ export async function loadSettings(): Promise<Settings> {
 
 let pendingWrite: Promise<void> = Promise.resolve();
 
+/**
+ * Saves a connection only if none is saved yet, checked and written inside the same write queue as
+ * saveSettings, so a connection saved by hand (before or meanwhile) always wins. Resolves to
+ * whether it was written.
+ */
+export function saveConnectionIfUnset(connection: Pick<Settings, 'facadeUrl' | 'token'>): Promise<boolean> {
+  const write = pendingWrite.then(async () => {
+    const settings = await readSettings();
+    if (settings.facadeUrl.trim() || settings.token.trim()) return false;
+    await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...settings, ...connection }));
+    return true;
+  });
+  pendingWrite = write.then(() => undefined, () => undefined);
+  return write;
+}
+
 export function saveSettings(patch: Partial<Settings>): Promise<void> {
   const write = pendingWrite.then(async () => {
     const settings = await readSettings();

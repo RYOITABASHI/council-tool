@@ -11,13 +11,13 @@ import { AgendaAnnouncement } from '../components/AgendaAnnouncement';
 import { AttestRow } from '../components/AttestRow';
 import { ChatHeader, HeaderIcon, HeaderPill } from '../components/ChatHeader';
 import { GateCard } from '../components/GateCard';
-import { PacketBubble } from '../components/PacketBubble';
+import { addresseeLabel, isChairNote, isOwnPost, PacketBubble } from '../components/PacketBubble';
 import { RoundHeader } from '../components/RoundHeader';
-import { SeatAvatar } from '../components/SeatAvatar';
+import { SeatAvatar, SeatRosterProvider } from '../components/SeatAvatar';
 import { StateBanner } from '../components/StateBanner';
 import { SynthesisCard } from '../components/SynthesisCard';
 import { mentionedSeat } from '../components/MentionText';
-import { lineHeightFor, useTheme } from '../components/styles';
+import { lineHeightFor, ThemeStyleProvider, useTheme } from '../components/styles';
 import { loadFixtureMeeting } from '../fixtures';
 import { buildTimeline, receptionRowsForRound, supersededInfo, topicOf } from '../model';
 import type { TimelineItem } from '../model';
@@ -61,6 +61,22 @@ function makeSections(items: ListItem[]): MeetingSection[] {
   }
 
   return sections.filter(section => section.header || section.data.length > 0);
+}
+
+/**
+ * Whether a line-style item opens a new run of one speaker's bubbles (LINE shows the avatar, name and
+ * tail only on a run's first bubble). The owner's own posts form runs of their own.
+ */
+function startsGroup(item: ListItem, previous: ListItem | undefined): boolean {
+  if (item.type !== 'packet' || previous?.type !== 'packet') return true;
+  const own = isOwnPost(item.entry);
+  if (own !== isOwnPost(previous.entry)) return true;
+  if (own) return false;
+  // B3: the 議長 tag and the addressee label ride on the run's name line, so every chair note opens
+  // its own run (chair notes share seat_id null) and a change of addressee starts a new one.
+  if (isChairNote(item.entry) || isChairNote(previous.entry) ||
+    addresseeLabel(item.entry) !== addresseeLabel(previous.entry)) return true;
+  return item.entry.packet.header.seat_id !== previous.entry.packet.header.seat_id;
 }
 
 function itemKey(item: ListItem): string {
@@ -112,6 +128,8 @@ function findSentNote(packets: GetPacketsResponse, sent: SentPost): string | und
 
 // Space kept above the revealed post so it does not sit flush against the top edge.
 const revealMargin = 12;
+/** Stable empty roster while the meeting state is still loading. */
+const noSeats: readonly { seat_id: string; role?: string }[] = [];
 
 function MeetingContent({ data, displayStyle, refreshing, refresh, openPacket, follow }: {
   data: MeetingData; displayStyle: DisplayStyle; refreshing: boolean; refresh: () => void;
@@ -143,7 +161,7 @@ function MeetingContent({ data, displayStyle, refreshing, refresh, openPacket, f
     return <RoundHeader round={round} phase={phase} rows={receptionRowsForRound(state, round)} variant={displayStyle} />;
   }
 
-  function renderContent(item: ListItem, reply: boolean) {
+  function renderContent(item: ListItem, reply: boolean, groupStart = true) {
     switch (item.type) {
       case 'roundHeader': return roundHeader(item.round, item.phase);
       case 'attest': return <AttestRow entry={item.entry} />;
@@ -152,7 +170,7 @@ function MeetingContent({ data, displayStyle, refreshing, refresh, openPacket, f
       case 'packet': {
         const id = item.entry.packet.header.packet_id;
         return (
-          <PacketBubble entry={item.entry} seatIds={seatIds} variant={displayStyle} reply={reply}
+          <PacketBubble entry={item.entry} seatIds={seatIds} variant={displayStyle} reply={reply} groupStart={groupStart}
             isSuperseded={versions.supersededIds.has(id)}
             onPress={() => openPacket(id)}
           />
@@ -161,8 +179,14 @@ function MeetingContent({ data, displayStyle, refreshing, refresh, openPacket, f
     }
   }
 
-  function renderItem({ item }: { item: ListItem }) {
-    return <View style={styles.lineItem}>{renderContent(item, false)}</View>;
+  // LINE rhythm: about 14dp between speaker runs, 4dp between bubbles of one run.
+  function renderItem({ item, index }: { item: ListItem; index: number }) {
+    const groupStart = startsGroup(item, items[index - 1]);
+    return (
+      <View style={item.type !== 'packet' ? styles.lineItem : groupStart ? styles.groupStart : styles.groupNext}>
+        {renderContent(item, false, groupStart)}
+      </View>
+    );
   }
 
   // Slack threads: the round's first post is the parent; later posts hang off a left rail as replies.
@@ -352,7 +376,7 @@ function MeetingContent({ data, displayStyle, refreshing, refresh, openPacket, f
   );
   const listProps = {
     style: { backgroundColor: colors.chatBg },
-    contentContainerStyle: styles.list,
+    contentContainerStyle: [styles.list, displayStyle === 'slack' && styles.threadList],
     keyboardShouldPersistTaps: 'handled' as const,
     keyExtractor: itemKey,
     refreshControl: (
@@ -431,11 +455,13 @@ function RunnerIndicator({ runner }: { runner?: RunnerState }) {
 }
 
 function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: string }) {
-  const { colors, ui } = useTheme();
+  const [displayStyle, setDisplayStyle] = useState<DisplayStyle>('line');
+  // The meeting draws in its display style's colour system (line: LINE's neutral dark, thread: Slack's
+  // blue-tinted dark); the provider below hands the same palette to every component inside.
+  const { colors, ui } = useTheme(displayStyle);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [meeting, setMeeting] = useState<LoadedMeeting>();
-  const [displayStyle, setDisplayStyle] = useState<DisplayStyle>('line');
   const [connectionConfigured, setConnectionConfigured] = useState(false);
   const [settingsReady, setSettingsReady] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
@@ -716,7 +742,12 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
   const agenda = data && agendaOf(data);
   const hasText = !!text.trim();
 
+  const thread = displayStyle === 'slack';
+
   return (
+    <ThemeStyleProvider value={displayStyle}>
+    {/* Avatars take their provider mark from each seat's kind (get_state's role) and tell same-mark seats apart. */}
+    <SeatRosterProvider seats={state?.seats ?? noSeats}>
     <KeyboardAvoidingView style={[styles.screen, { backgroundColor: colors.chatBg }]}
       behavior={!fixture && Platform.OS === 'ios' ? 'padding' : undefined}>
       <ChatHeader title={(data && topicOf(data.packets)) || '会議'} count={state?.seats.length}
@@ -743,7 +774,9 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
           openPacket={openPacket} follow={follow} />
           : loading && <ActivityIndicator style={styles.status} color={colors.accent} accessibilityLabel="読み込み中" />}
       </View>
-      <SafeAreaView edges={['bottom']} style={[styles.composer, { backgroundColor: colors.header }]}>
+      {/* Line: LINE's bar in the chat background. Thread: Slack's sheet, rounded only on top. */}
+      <SafeAreaView edges={['bottom']} style={[styles.composer, { backgroundColor: colors.composerBar },
+        thread && [styles.sheet, { borderColor: colors.border }]]}>
         {(data || saveFailed) && (
           <View style={[styles.band, { borderBottomColor: colors.border }]}>
             <View style={styles.bandRow}>
@@ -824,32 +857,39 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
             <Pressable accessibilityRole="button" accessibilityLabel="宛先を選ぶ"
               accessibilityState={{ disabled: !canMention, expanded: pickerOpen }} disabled={!canMention}
               onPress={() => setPickerOpen(open => !open)}
-              style={[styles.action, !canMention && ui.disabled]}>
-              <Text style={[styles.actionGlyph, { color: pickerOpen ? colors.accentText : colors.muted }]}>＠</Text>
+              style={[styles.action, thread && [styles.threadAction, { backgroundColor: colors.pill }],
+                !canMention && ui.disabled]}>
+              <Text style={[styles.actionGlyph, thread && styles.threadActionGlyph,
+                { color: pickerOpen ? colors.accentText : thread ? colors.ink : colors.muted }]}>＠</Text>
             </Pressable>
-            {canMention ? (
-              <TextInput accessibilityLabel="メンションの内容"
-                placeholder="@で席を指定して発言" placeholderTextColor={colors.muted}
-                style={[styles.mentionInput, { backgroundColor: colors.inputBg, color: colors.ink }]}
-                value={text} onChangeText={setText} onSelectionChange={onSelectionChange}
-                selection={forcedSelection}
-                editable={!writeBusy} multiline />
-            ) : (
-              <View style={[styles.mentionInput, styles.disabledInput, { backgroundColor: colors.inputBg }]}>
-                <Text numberOfLines={2} style={ui.muted}>{postingReason}</Text>
-              </View>
-            )}
-            <Pressable accessibilityRole="button" accessibilityLabel="送信" disabled={!canSend}
-              accessibilityState={{ disabled: !canSend }} onPress={sendMention}
-              style={[styles.send, canSend && { backgroundColor: colors.accent }]}>
-              <Text style={[styles.sendGlyph, {
-                color: canSend ? colors.onAccent : colors.muted,
-              }]}>➤</Text>
-            </Pressable>
+            {/* The field holds the send button at its right end (LINE's in-field button slot). */}
+            <View style={[styles.field, thread && styles.threadInput, { backgroundColor: colors.inputBg }]}>
+              {canMention ? (
+                <TextInput accessibilityLabel="メンションの内容"
+                  placeholder="@で席を指定して発言" placeholderTextColor={colors.muted}
+                  style={[styles.mentionInput, { color: colors.ink }]}
+                  value={text} onChangeText={setText} onSelectionChange={onSelectionChange}
+                  selection={forcedSelection}
+                  editable={!writeBusy} multiline />
+              ) : (
+                <View style={[styles.mentionInput, styles.disabledInput]}>
+                  <Text numberOfLines={2} style={ui.muted}>{postingReason}</Text>
+                </View>
+              )}
+              <Pressable accessibilityRole="button" accessibilityLabel="送信" disabled={!canSend}
+                accessibilityState={{ disabled: !canSend }} onPress={sendMention} hitSlop={4}
+                style={[styles.send, canSend && { backgroundColor: colors.accent }]}>
+                <Text style={[styles.sendGlyph, {
+                  color: canSend ? colors.onAccent : colors.muted,
+                }]}>➤</Text>
+              </Pressable>
+            </View>
           </View>
         </View>
       </SafeAreaView>
     </KeyboardAvoidingView>
+    </SeatRosterProvider>
+    </ThemeStyleProvider>
   );
 }
 
@@ -863,8 +903,12 @@ const styles = StyleSheet.create({
   runner: { alignItems: 'flex-start', gap: 4 },
   // Full-width row of equal buttons: the labels get spare width instead of an exact-fit box.
   controls: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  // Line: avatars sit 10dp from the left edge (LINE). Thread: Slack's wider inset.
   list: { width: '100%', maxWidth: 800, alignSelf: 'center', paddingHorizontal: 10, paddingTop: 4, paddingBottom: 16 },
+  threadList: { paddingHorizontal: 12 },
   lineItem: { paddingVertical: 6 },
+  groupStart: { paddingTop: 14 },
+  groupNext: { paddingTop: 4 },
   threadItem: { paddingTop: 4 },
   reply: { marginLeft: 22, borderLeftWidth: 2, paddingLeft: 10, paddingVertical: 2 },
   footer: { gap: 8, marginTop: 8 },
@@ -872,6 +916,10 @@ const styles = StyleSheet.create({
   status: { padding: 14, gap: 8, alignItems: 'center' },
   error: { textAlign: 'center' },
   composer: {},
+  sheet: {
+    borderTopLeftRadius: 16, borderTopRightRadius: 16, borderTopWidth: StyleSheet.hairlineWidth,
+    borderLeftWidth: StyleSheet.hairlineWidth, borderRightWidth: StyleSheet.hairlineWidth, overflow: 'hidden',
+  },
   band: {
     width: '100%', maxWidth: 800, alignSelf: 'center', paddingHorizontal: 12, paddingVertical: 6, gap: 4,
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -883,23 +931,33 @@ const styles = StyleSheet.create({
   candidate: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, minHeight: 44 },
   candidateLabel: { flex: 1, minWidth: 0 },
   suggestion: {
-    // Spans the input's width (between the @ and send buttons) so its label is never boxed to an exact fit.
-    marginLeft: 46, marginRight: 50, borderWidth: StyleSheet.hairlineWidth, borderRadius: 16,
+    // Spans the field's width (right of the @ button) so its label is never boxed to an exact fit.
+    marginLeft: 46, marginRight: 0, borderWidth: StyleSheet.hairlineWidth, borderRadius: 16,
     paddingHorizontal: 12, paddingVertical: 6, minHeight: 36, justifyContent: 'center',
   },
   suggestionText: { fontWeight: '600' },
   pressedChip: { opacity: 0.7 },
   addresseeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingLeft: 48 },
   messageRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 6 },
+  // LINE: the @ sits outside the field on the left (where LINE's + / camera are), send outside on the
+  // right (LINE's mic). Touch targets stay 44dp tall around the 40dp field.
   action: { width: 40, height: 44, alignItems: 'center', justifyContent: 'center' },
-  actionGlyph: { fontSize: 24, fontWeight: '300' },
-  mentionInput: {
-    flex: 1, minHeight: 44, maxHeight: 110, borderRadius: 22, paddingHorizontal: 16, paddingVertical: 10,
-    fontSize: 16,
+  actionGlyph: { fontSize: 24, lineHeight: lineHeightFor(24), fontWeight: '300' },
+  // Slack: a round + style button on the left of the sheet (here the @ picker).
+  threadAction: { width: 40, height: 40, borderRadius: 20, marginBottom: 2 },
+  threadActionGlyph: { fontSize: 20, lineHeight: lineHeightFor(20), fontWeight: '400' },
+  // LINE's field: dark grey, corner about 20dp, about 40dp tall, the send button inside at its right.
+  field: {
+    flex: 1, flexDirection: 'row', alignItems: 'flex-end', minHeight: 40, borderRadius: 20, marginVertical: 2,
+    paddingRight: 4,
   },
+  mentionInput: { flex: 1, minHeight: 40, maxHeight: 110, paddingLeft: 14, paddingRight: 6, paddingVertical: 8, fontSize: 16 },
+  // Slack's field is the sheet itself: no separate fill or corner.
+  threadInput: { borderRadius: 0 },
   disabledInput: { justifyContent: 'center' },
-  send: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
-  sendGlyph: { fontSize: 19 },
+  // 36dp inside the 40dp field; hitSlop brings the touch target to 44dp.
+  send: { width: 36, height: 36, borderRadius: 18, marginBottom: 2, alignItems: 'center', justifyContent: 'center' },
+  sendGlyph: { fontSize: 17, lineHeight: lineHeightFor(17) },
   latest: {
     position: 'absolute', right: 14, bottom: 12, width: 44, height: 44, borderRadius: 22,
     alignItems: 'center', justifyContent: 'center', borderWidth: StyleSheet.hairlineWidth,

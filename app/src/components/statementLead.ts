@@ -19,10 +19,12 @@ export const leadLines = 8;
 /**
  * Full-width characters per line of lead text at the narrowest width the app is laid out for, with
  * the system font scale at 1. Worked from a 320dp-wide screen and the line-style bubble (the
- * narrower of the two styles): list padding 2×10, avatar 40 + gap 8, row padding 8 → column 244;
- * bubble capped at 84% → 205, minus its 5 + 2×13 padding → about 174dp of text at 15.5dp, which is
- * 11 full-width glyphs. One glyph of slack is taken off for line-breaking rules (kinsoku) that push
- * a character to the next line. Thread-style posts are wider (about 14 glyphs even as replies).
+ * narrower of the two styles): list inset 10 + 10, avatar 40 + gap 8, row padding 4 → column 248;
+ * the time column beside the bubble (about 34 with its gap) leaves the bubble about 214, which is
+ * also its cap (85% of the screen minus 58); minus the tail inset 6 and 2×14 padding → about 180dp
+ * of text at 15.5dp, which is 11 full-width glyphs. One glyph of slack is taken off for line-breaking
+ * rules (kinsoku) that push a character to the next line. Thread-style posts are wider (about 13
+ * glyphs at 16dp even as replies).
  */
 export const narrowestLineCharacters = 10;
 
