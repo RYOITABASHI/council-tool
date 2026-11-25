@@ -69,25 +69,68 @@ export function groupByRound(state: GetStateResponse, packets: GetPacketsRespons
   return { agenda, notes, sections, synthesis };
 }
 
+/** Milliseconds for ordering; an unparseable time sorts last rather than jumping to the top. */
+function timeOf(iso: string | null | undefined): number {
+  const value = iso ? Date.parse(iso) : NaN;
+  return Number.isNaN(value) ? Infinity : value;
+}
+
 export function buildTimeline(state: GetStateResponse, packets: GetPacketsResponse): TimelineItem[] {
   const { agenda, notes, sections, synthesis } = groupByRound(state, packets);
   const items: TimelineItem[] = [];
   if (agenda) items.push({ type: 'agenda', entry: agenda });
-  for (const entry of notes) items.push({ type: 'packet', entry });
 
+  // The round-structured body, each item paired with the time used to slot round-less notes in.
+  // A round header takes its round's opened_at (else its first item's time), so it stays above
+  // its own items and a note sent before the round opened lands above the header.
+  const body: { item: TimelineItem; at: number }[] = [];
   for (const { round, phase, entries } of sections) {
-    items.push({ type: 'roundHeader', round, phase });
+    const openedAt = state.round_states.find(candidate => candidate.round === round)?.opened_at;
+    const headerAt = openedAt ? timeOf(openedAt)
+      : entries.length > 0 ? timeOf(entries[0].packet.header.created_at) : Infinity;
+    body.push({ item: { type: 'roundHeader', round, phase }, at: headerAt });
     for (const entry of entries) {
-      if (isPacketKind(entry, 'attest')) items.push({ type: 'attest', entry });
-      else if (isPacketKind(entry, 'gate_decision')) items.push({ type: 'gate', entry });
+      const at = timeOf(entry.packet.header.created_at);
+      if (isPacketKind(entry, 'attest')) body.push({ item: { type: 'attest', entry }, at });
+      else if (isPacketKind(entry, 'gate_decision')) body.push({ item: { type: 'gate', entry }, at });
       else if (isPacketKind(entry, 'answer') || isPacketKind(entry, 'critique') ||
         isPacketKind(entry, 'flash') || isPacketKind(entry, 'note')) {
-        items.push({ type: 'packet', entry });
+        body.push({ item: { type: 'packet', entry }, at });
       }
     }
   }
 
+  // Round-less notes (mentions sent between rounds) go in chronologically: each sits right after the
+  // last body item that is not later than it, so everything earlier than a note is shown above it even
+  // if the body itself is not strictly in time order. Body items with an unparseable time are not used
+  // as anchors. The rounds' own order is left untouched. Notes later than every body item come last,
+  // after the timeout notice, i.e. right before the synthesis card.
+  const ordered = notes
+    .map((entry, index) => ({ entry, index, at: timeOf(entry.packet.header.created_at) }))
+    .sort((a, b) => a.at - b.at || a.index - b.index);
+  // slots[i] holds the notes shown before body[i]; slots[body.length] the ones after the whole body.
+  const slots: MessageEntry[][] = Array.from({ length: body.length + 1 }, () => []);
+  for (const { entry, at } of ordered) {
+    let anchor = -1;
+    if (at !== Infinity) {
+      for (let index = body.length - 1; index >= 0; index -= 1) {
+        if (body[index].at !== Infinity && body[index].at <= at) {
+          anchor = index;
+          break;
+        }
+      }
+    } else {
+      anchor = body.length - 1;
+    }
+    slots[anchor + 1].push(entry);
+  }
+  body.forEach(({ item }, index) => {
+    for (const entry of slots[index]) items.push({ type: 'packet', entry });
+    items.push(item);
+  });
+
   if (state.timeout_exceeded) items.push({ type: 'timeout' });
+  for (const entry of slots[body.length]) items.push({ type: 'packet', entry });
   if (synthesis) items.push({ type: 'synthesis', entry: synthesis });
   return items;
 }

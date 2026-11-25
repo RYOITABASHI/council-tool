@@ -1,7 +1,7 @@
 import { StyleSheet, Text, View } from 'react-native';
 import type { DisplayStyle } from '../storage';
 import type { ReceptionRow, Round, RoundState } from '../types';
-import { useTheme } from './styles';
+import { lineHeightFor, useTheme } from './styles';
 
 export const receptionLabels: Record<ReceptionRow['state'], string> = {
   received: '既読',
@@ -24,9 +24,9 @@ export function RoundHeader({ round, phase, rows, variant = 'line' }: Props) {
   const pill = (
     <View style={[styles.pill, { backgroundColor: colors.pill },
       variant === 'slack' && { backgroundColor: colors.chatBg, borderColor: colors.rail, borderWidth: StyleSheet.hairlineWidth }]}>
-      <Text accessibilityRole="header" accessibilityLabel={`ラウンド ${round} ${phaseLabel}`}
+      <Text accessibilityRole="header" accessibilityLabel={`ラウンド ${round} ${phaseLabel}`} numberOfLines={1}
         style={[styles.label, { color: variant === 'slack' ? colors.ink : colors.pillInk }]}>
-        {round}{phase === 'open' ? ` ${phaseLabel}` : ''}
+        {round} {phaseLabel}
       </Text>
     </View>
   );
@@ -40,9 +40,8 @@ export function RoundHeader({ round, phase, rows, variant = 'line' }: Props) {
           <View style={[styles.rule, { backgroundColor: colors.rail }]} />
         </View>
       ) : pill}
-      <Text style={[ui.muted, styles.reception]}>
-        {phaseLabel}{rows.length > 0 ? ` ・ ${reception}` : ''}
-      </Text>
+      {/* The phase lives in the pill only; this line carries the reception table. */}
+      {rows.length > 0 && <Text style={[ui.muted, styles.reception]}>{reception}</Text>}
     </View>
   );
 }
@@ -52,6 +51,6 @@ const styles = StyleSheet.create({
   divider: { flexDirection: 'row', alignItems: 'center', alignSelf: 'stretch' },
   rule: { flex: 1, height: StyleSheet.hairlineWidth },
   pill: { borderRadius: 14, paddingHorizontal: 14, paddingVertical: 4 },
-  label: { fontSize: 12.5, fontWeight: '600', textAlign: 'center' },
-  reception: { fontSize: 10.5, lineHeight: 14, textAlign: 'center', paddingHorizontal: 16 },
+  label: { fontSize: 12.5, lineHeight: lineHeightFor(12.5), fontWeight: '600', textAlign: 'center' },
+  reception: { fontSize: 10.5, lineHeight: lineHeightFor(10.5), textAlign: 'center', paddingHorizontal: 16 },
 });

@@ -69,17 +69,26 @@ const darkColors: typeof lightColors = {
   rail: '#3A3A3A',
 };
 
+/**
+ * Line height for a font size. CJK fallback fonts (Noto Sans CJK) need about 1.45em of
+ * ascent + descent; a lineHeight below that clips glyphs vertically on Android. Proportional,
+ * so it scales with the system font size instead of fixing a pixel height.
+ */
+export function lineHeightFor(fontSize: number): number {
+  return Math.ceil(fontSize * 1.5);
+}
+
 function makeUi(colors: typeof lightColors) {
   return StyleSheet.create({
-    body: { fontSize: 15, lineHeight: 22, color: colors.ink },
-    muted: { fontSize: 13, lineHeight: 18, color: colors.muted },
+    body: { fontSize: 15, lineHeight: lineHeightFor(15), color: colors.ink },
+    muted: { fontSize: 13, lineHeight: lineHeightFor(13), color: colors.muted },
     title: { fontSize: 18, fontWeight: '700', color: colors.ink },
     label: { fontSize: 14, fontWeight: '700', color: colors.ink },
     card: { backgroundColor: colors.surface, borderRadius: 14, padding: 12, gap: 8 },
     systemCard: { width: '94%', maxWidth: 600, alignSelf: 'center' },
     chip: {
       overflow: 'hidden', borderRadius: 12, backgroundColor: colors.pale, color: colors.ink,
-      fontSize: 12, lineHeight: 16, paddingHorizontal: 8, paddingVertical: 2,
+      fontSize: 12, lineHeight: lineHeightFor(12), paddingHorizontal: 8, paddingVertical: 2,
     },
     warning: { backgroundColor: colors.amberBackground, color: colors.amber },
     danger: { backgroundColor: colors.redBackground, color: colors.red },
@@ -92,6 +101,9 @@ function makeUi(colors: typeof lightColors) {
       minHeight: 46, borderWidth: 1, borderColor: colors.border, borderRadius: 8,
       paddingHorizontal: 12, fontSize: 16, color: colors.ink, backgroundColor: colors.surface,
     },
+    // A button label spans the button's full width, so a label that renders a hair wider than it
+    // measured still fits on its line instead of wrapping its last glyph out of view.
+    buttonText: { alignSelf: 'stretch', textAlign: 'center' },
     disabled: { opacity: 0.55 },
     primary: { backgroundColor: colors.accent },
     primaryText: { color: colors.onAccent, fontWeight: '700' },

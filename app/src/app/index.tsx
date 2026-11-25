@@ -6,8 +6,9 @@ import {
 import { FacadeError, facadeErrorMessages, fetchMeeting, fetchMeetings } from '../api';
 import type { FacadeErrorKind } from '../api';
 import { ChatHeader, HeaderIcon } from '../components/ChatHeader';
+import { seatColor } from '../components/SeatAvatar';
 import { statementLead } from '../components/statementLead';
-import { formatTime, useTheme } from '../components/styles';
+import { formatTime, lineHeightFor, useTheme } from '../components/styles';
 import { loadFixtureMeeting, loadFixtureMeetings } from '../fixtures';
 import { loadSettings } from '../storage';
 import { isPacketKind } from '../types';
@@ -24,7 +25,6 @@ const badges: Record<MeetingState, { label: string; tone: Tone }> = {
   SYNTHESIZING: { label: '統合中', tone: 'blue' },
   BARRIER: { label: 'バリア', tone: 'amber' },
 };
-const avatarColors = ['#D2EDE2', '#F6DECE', '#E7DEF8', '#DCEAFB', '#F6E3F0', '#F8ECC9'];
 
 // Slack-like channel sections: what needs the owner first, then live work, then the archive.
 type Group = 'awaiting' | 'active' | 'done';
@@ -33,12 +33,6 @@ function groupOf(state: MeetingState): Group {
   if (state === 'AWAITING_APPROVAL') return 'awaiting';
   if (state === 'APPROVED' || state === 'REJECTED') return 'done';
   return 'active';
-}
-
-function avatarColor(id: string): string {
-  let hash = 0;
-  for (const character of id) hash = (Math.imul(hash, 31) + character.codePointAt(0)!) >>> 0;
-  return avatarColors[hash % avatarColors.length];
 }
 
 function meetingDate(value: string): string {
@@ -97,7 +91,7 @@ function GroupAvatar({ seatIds }: { seatIds: string[] }) {
       {columns.map((column, x) => (
         <View key={x} style={[styles.avatarColumn, x > 0 && { borderLeftColor: colors.listSurface, borderLeftWidth: 1 }]}>
           {column.map((id, y) => (
-            <View key={id} style={[styles.avatarCell, { backgroundColor: avatarColor(id) },
+            <View key={id} style={[styles.avatarCell, { backgroundColor: seatColor(id) },
               y > 0 && { borderTopColor: colors.listSurface, borderTopWidth: 1 }]}>
               <Text style={[styles.avatarInitial, { color: colors.avatarInk, fontSize: size }]}>
                 {Array.from(id)[0]?.toUpperCase()}
@@ -116,7 +110,8 @@ function StatePill({ state }: { state: MeetingState }) {
   const background = badge?.tone === 'amber' ? colors.amberBackground
     : badge?.tone === 'red' ? colors.redBackground : colors.pale;
   return (
-    <Text style={[styles.pill, { backgroundColor: background, color: badge ? colors[badge.tone] : colors.muted }]}>
+    <Text numberOfLines={1}
+      style={[styles.pill, { backgroundColor: background, color: badge ? colors[badge.tone] : colors.muted }]}>
       {badge?.label ?? state}
     </Text>
   );
@@ -132,21 +127,20 @@ function SessionRow({ meeting, source, preview }: { meeting: MeetingSummary; sou
       style={({ pressed }) => [styles.row, { backgroundColor: pressed ? colors.pressed : colors.listSurface }]}>
       <GroupAvatar seatIds={meeting.seat_ids} />
       <View style={styles.details}>
-        <View style={styles.line}>
-          <View style={styles.titleRow}>
-            <Text numberOfLines={1} style={[ui.body, styles.topic]}>{meeting.topic}</Text>
-            {meeting.seat_ids.length > 1 && (
-              <Text style={[ui.body, styles.count]}>({meeting.seat_ids.length})</Text>
-            )}
-          </View>
-          {!!timestamp && <Text style={[ui.muted, styles.timestamp]}>{timestamp}</Text>}
-        </View>
-        <View style={styles.line}>
-          <Text numberOfLines={1} style={[ui.muted, styles.preview]}>
-            {preview ? `${preview.seat ? `${preview.seat}：` : ''}${preview.text}` : seatPreview}
-          </Text>
-          <StatePill state={meeting.meeting_state} />
-        </View>
+        {/* Title (with its seat count) and preview fill the row and end in "…" when too long. */}
+        <Text numberOfLines={1} style={[ui.body, styles.topic]}>
+          {meeting.topic}
+          {meeting.seat_ids.length > 1 && <Text>{` (${meeting.seat_ids.length})`}</Text>}
+        </Text>
+        <Text numberOfLines={1} style={[ui.muted, styles.preview]}>
+          {preview ? `${preview.seat ? `${preview.seat}：` : ''}${preview.text}` : seatPreview}
+        </Text>
+      </View>
+      {/* Time over state, LINE-style. The column is as wide as its wider item and the time stretches
+          across it, so the time is never boxed to its exact measured width. */}
+      <View style={styles.side}>
+        {!!timestamp && <Text numberOfLines={1} style={[ui.muted, styles.timestamp]}>{timestamp}</Text>}
+        <StatePill state={meeting.meeting_state} />
       </View>
     </Pressable>
   );
@@ -234,10 +228,10 @@ export default function SessionsScreen() {
         <View style={styles.status}>
           <Text accessibilityLiveRegion="polite" style={[ui.body, styles.error, { color: colors.red }]}>{facadeErrorMessages[error]}</Text>
           <Pressable accessibilityRole="button" style={[ui.button, ui.primary]} onPress={retry}>
-            <Text style={ui.primaryText}>再試行</Text>
+            <Text style={[ui.primaryText, ui.buttonText]}>再試行</Text>
           </Pressable>
           <Pressable accessibilityRole="button" style={ui.button} onPress={() => setUseSamples(true)}>
-            <Text style={ui.label}>サンプル会議一覧を見る</Text>
+            <Text style={[ui.label, ui.buttonText]}>サンプル会議一覧を見る</Text>
           </Pressable>
         </View>
       </View>
@@ -285,14 +279,13 @@ const styles = StyleSheet.create({
   avatarCell: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   avatarInitial: { fontWeight: '700' },
   details: { flex: 1, minWidth: 0, gap: 3 },
-  line: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  titleRow: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center' },
-  topic: { flexShrink: 1, fontSize: 16, fontWeight: '600', lineHeight: 22 },
-  count: { fontSize: 16, fontWeight: '600', lineHeight: 22, paddingLeft: 2 },
-  timestamp: { fontSize: 11.5, lineHeight: 16, fontVariant: ['tabular-nums'], textAlign: 'right', alignSelf: 'flex-start', paddingTop: 2 },
-  preview: { flex: 1, fontSize: 13.5, lineHeight: 19 },
+  side: { flexShrink: 0, alignItems: 'stretch', gap: 5 },
+  topic: { fontSize: 16, fontWeight: '600', lineHeight: lineHeightFor(16) },
+  timestamp: { fontSize: 11.5, lineHeight: lineHeightFor(11.5), fontVariant: ['tabular-nums'], textAlign: 'right' },
+  preview: { fontSize: 13.5, lineHeight: lineHeightFor(13.5) },
   pill: {
-    overflow: 'hidden', borderRadius: 10, fontSize: 10.5, lineHeight: 14, fontWeight: '600',
+    textAlign: 'center',
+    overflow: 'hidden', borderRadius: 10, fontSize: 10.5, lineHeight: lineHeightFor(10.5), fontWeight: '600',
     paddingHorizontal: 7, paddingVertical: 2,
   },
   note: { textAlign: 'center', padding: 16 },

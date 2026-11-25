@@ -80,7 +80,7 @@ export default function SettingsScreen() {
             editable={!busy} secureTextEntry autoCapitalize="none" autoCorrect={false} />
           <Pressable accessibilityRole="button" disabled={busy} style={ui.button}
             onPress={() => void saveConnection(false)}>
-            <Text style={ui.label}>保存</Text>
+            <Text style={[ui.label, ui.buttonText]}>保存</Text>
           </Pressable>
           {!!feedback && <Text accessibilityLiveRegion="polite" style={ui.muted}>{feedback}</Text>}
         </View>
@@ -119,7 +119,7 @@ export default function SettingsScreen() {
                 <Pressable key={value} accessibilityRole="button" accessibilityState={{ selected }}
                   style={[ui.button, styles.segment, selected && ui.primary]}
                   onPress={() => savePreference({ displayStyle: value })}>
-                  <Text style={selected ? ui.primaryText : ui.label}>{label}</Text>
+                  <Text style={[selected ? ui.primaryText : ui.label, ui.buttonText]}>{label}</Text>
                 </Pressable>
               );
             })}
@@ -134,7 +134,7 @@ export default function SettingsScreen() {
           <Pressable accessibilityRole="button" disabled={busy || !meetingId}
             style={[ui.button, ui.primary, (busy || !meetingId) && ui.disabled]}
             onPress={() => void saveConnection(true)}>
-            <Text style={ui.primaryText}>開く</Text>
+            <Text style={[ui.primaryText, ui.buttonText]}>開く</Text>
           </Pressable>
         </View>
       </ScrollView>
