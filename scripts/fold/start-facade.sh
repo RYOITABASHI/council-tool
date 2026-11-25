@@ -54,19 +54,10 @@ fi
 if [ -z "${COUNCIL_CODEX_COMMAND:-}" ] && command -v codex_exec >/dev/null 2>&1; then
     COUNCIL_CODEX_COMMAND=codex_exec
     if [ -z "${COUNCIL_CODEX_ARGS+set}" ]; then
-        # Legacy-client pin: codex_exec 0.142.x is served only the
-        # codex-auto-review model by the ChatGPT-account catalog, and its
-        # built-in default model is rejected (model_not_found). Pin the
-        # one served model for that client only; remove this case once
-        # the bundled Codex is updated to a served-default build.
-        if codex_version=$(codex_exec --version 2>/dev/null); then
-            case "$codex_version" in
-                *0.142.*) COUNCIL_CODEX_ARGS="--skip-git-repo-check -m codex-auto-review -" ;;
-                *) COUNCIL_CODEX_ARGS="--skip-git-repo-check -" ;;
-            esac
-        else
-            COUNCIL_CODEX_ARGS="--skip-git-repo-check -"
-        fi
+        # No model pin: the bundled Codex is 0.167.0 (verified on-device
+        # 2026-11-25), whose built-in default model is served. The former
+        # 0.142.x codex-auto-review pin was removed with the client update.
+        COUNCIL_CODEX_ARGS="--skip-git-repo-check -"
     fi
     export COUNCIL_CODEX_COMMAND COUNCIL_CODEX_ARGS
 fi
