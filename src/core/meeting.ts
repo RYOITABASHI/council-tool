@@ -4,7 +4,7 @@ import type { HashablePacketHeader, Packet, PacketBodies, PacketHashInput, Packe
 import { compare, instant, iso, packetTimestamp, parseAbsolute, seconds } from './clock.js';
 import type { ClockSample, Deadline, Instant } from './clock.js';
 import { answer } from './model.js';
-import type { Meeting, Missing, ReceptionRow, RoundRecord, StoredPacket } from './model.js';
+import type { Meeting, Missing, NoteAttribution, ReceptionRow, RoundRecord, StoredPacket } from './model.js';
 import type { Round, StoredSeatConfig } from './types.js';
 import { blank, fail, requireArgument } from './validation.js';
 
@@ -40,6 +40,10 @@ export function append<K extends PacketKind>(
   m: Meeting, now: ClockSample, kind: K, location: Pick<HashablePacketHeader<K>, 'round' | 'seat_id' | 'supersedes'>,
   body: PacketBodies[K], metadata: Partial<Omit<StoredPacket, 'packet'>> = {},
 ) {
+  // Attribution is only for notes and must be well formed; never drop it silently.
+  if (Object.hasOwn(metadata, 'note') && (kind !== 'note' || !noteAttributionValid(m, metadata.note))) {
+    fail('invalid_argument');
+  }
   const header = { ...location, meeting_id: m.id, created_at: packetTimestamp(now.wall), kind };
   const packet_id = randomUUID();
   const packet_sha = packetSha({ header, body } as PacketHashInput);
@@ -54,6 +58,21 @@ export function append<K extends PacketKind>(
     missing: [], ...metadata,
   });
   return packet;
+}
+
+const plain = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' &&
+  (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null);
+const exactKeys = (v: Record<string, unknown>, keys: string[]) =>
+  Object.keys(v).length === keys.length && keys.every(key => Object.hasOwn(v, key));
+
+/** Shape of a note's origin and addressee; the addressee must be a configured seat. */
+export function noteAttributionValid(m: Pick<Meeting, 'setup'>, value: unknown): value is NoteAttribution {
+  if (!plain(value) || !exactKeys(value, ['origin', 'addressee'])) return false;
+  const { origin, addressee } = value;
+  return plain(origin) && exactKeys(origin, ['kind', 'principal']) &&
+    (origin.kind === 'human' || origin.kind === 'chair') &&
+    typeof origin.principal === 'string' && origin.principal.length > 0 && !/[\uD800-\uDFFF]/u.test(origin.principal) &&
+    (addressee === null || (typeof addressee === 'string' && findSeat(m, addressee) !== undefined));
 }
 
 export function stateError(m: Meeting): never {

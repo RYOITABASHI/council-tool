@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { blank, record, requireArgument, validate } from '../core/validation.js';
 import type { runCli } from '../drivers/index.js';
-import { assertCliCommandsResolvable, resolveCliConfigs } from './cli-config.js';
+import { assertCliCommandsResolvable, cliSeatKindAvailability, resolveCliConfigs } from './cli-config.js';
 import { HostRunner, isCliSeatKind } from './host-runner.js';
 import { createMeetingViews } from './meeting-views.js';
 
@@ -67,12 +67,14 @@ export function createConfiguredHttpServer(env: NodeJS.ProcessEnv = process.env,
   if (!token?.trim()) throw new Error('COUNCIL_HTTP_TOKEN must be set');
   const expectedAuthorization = Buffer.from(`Bearer ${token}`);
   const views = createMeetingViews(env);
-  const runner = new HostRunner(views.getCore, views.principal, options.runCli, resolveCliConfigs(env));
+  const cliConfigs = resolveCliConfigs(env);
+  const runner = new HostRunner(views.getCore, views.principal, options.runCli, cliConfigs);
 
   const server = createServer(async (request, response) => {
     const path = request.url?.split('?', 1)[0] ?? '';
     if (request.method === 'GET' && path === '/health') {
-      return sendJson(response, 200, { ok: true });
+      // CLI seat kinds only (codex / claude); api and local kinds are not claimed here.
+      return sendJson(response, 200, { ok: true, cli_seat_kinds: cliSeatKindAvailability(env, cliConfigs) });
     }
 
     const authorization = Buffer.from(request.headers.authorization ?? '');

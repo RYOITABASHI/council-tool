@@ -49,6 +49,11 @@ export interface RoundRecord {
 
 export type Missing = 'claims' | 'statement' | 'reversal_condition';
 export type Verification = 'verified' | 'unverified' | 'not_applicable';
+/** Who wrote a note and to whom. Decided by the call route, stored outside the hashed packet. */
+export interface NoteAttribution {
+  origin: { kind: 'human' | 'chair'; principal: string };
+  addressee: string | null;
+}
 export interface StoredPacket {
   packet: Packet;
   seq: number;
@@ -57,6 +62,13 @@ export interface StoredPacket {
   reception: 'received' | 'transcribed_pending_attest' | 'invalidated' | 'superseded' | 'not_applicable';
   missing: Missing[];
   heldFor?: Round;
+  /** Note packets only. Absent on notes written before attribution was recorded. */
+  note?: NoteAttribution;
+  /**
+   * PR-D: set by the file store on read when the packet file's bytes fail its receipt digest. Never
+   * persisted; the commit keeps the stored file and its recorded digest untouched.
+   */
+  quarantined?: { packet_id: string; packet_digest?: string };
   attest?: { target_packet_id: string; confirmer: string; body_sha: string;
     result: 'confirmed' | 'mismatch'; position: number };
 }

@@ -15,7 +15,8 @@ import { ERROR_CODES, ROUNDS } from '../core/types.js';
 import type { Round } from '../core/types.js';
 import { mergeSetup, record, validate } from '../core/validation.js';
 import { inputPacketAllowed } from '../core/views.js';
-import { bodySha } from '../packet/index.js';
+import { bodySha, packetSha } from '../packet/index.js';
+import type { PacketHashInput } from '../packet/index.js';
 import { contentDigest, copyExclusive, descriptorPath, identityAt, identityNonce, ManifestFile, openRegular,
   probeLinkCapability, revisionGeneration, sameEntry, sameIdentity, stageFile, StoreFiles } from './files.js';
 import { legacyPositionsFit } from './legacy-positions.js';
@@ -93,6 +94,36 @@ type MeetingFile = Omit<Meeting, 'packets'> & {
   packets: PacketRevision[];
 };
 type ReadPacket = (id: string) => StoredPacket['packet'];
+
+/**
+ * PR-D: packet bytes are used as data only when they are a packet of this meeting, stored under
+ * this id, whose packet_sha (PROTOCOL §3.4, the existing packetSha) still matches. Anything else is
+ * quarantined. This is the store's check in both modes; in link mode it is the only one.
+ */
+export function trustedPacket(raw: unknown, meeting_id: string, packet_id: string): StoredPacket['packet'] | undefined {
+  if (!record(raw) || !record(raw.header) || !record(raw.body)) return undefined;
+  const { header } = raw;
+  if (header.packet_id !== packet_id || header.meeting_id !== meeting_id || typeof header.kind !== 'string' ||
+      typeof header.packet_sha !== 'string') return undefined;
+  try {
+    return packetSha(raw as unknown as PacketHashInput) === header.packet_sha ?
+      raw as unknown as StoredPacket['packet'] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * PR-D: the in-memory stand-in for a quarantined packet. The untrusted bytes are never kept: the
+ * stand-in is an inert note with no round, seat, or supersedes, so it cannot count toward a seat's
+ * quota, decide a gate, or steer any other core state. It is marked quarantined and never served.
+ */
+function quarantinedPacket(meeting_id: string, packet_id: string): StoredPacket['packet'] {
+  return {
+    header: { packet_id, packet_sha: '', meeting_id, created_at: '', kind: 'note', round: null, seat_id: null, supersedes: null },
+    body: { text: '' },
+  } as StoredPacket['packet'];
+}
 
 function historyAtOrBefore<T>(before: readonly T[], after: readonly T[]): boolean {
   return before.length <= after.length && before.every((entry, index) => isDeepStrictEqual(entry, after[index]));
@@ -925,13 +956,17 @@ function legacyTimeoutConsistent(revision: MeetingFile, latestTick: bigint): boo
     scheduledAt === BigInt(round.deadline.ns) - seconds(round.relativeSeconds));
 }
 
-function legacyRevisionReplay(revision: MeetingFile, readPacket: ReadPacket, latestTick: bigint): LegacyReplay | undefined {
+/** The legacy revision checks that do not read packet contents. */
+function legacyRevisionConsistent(revision: MeetingFile, latestTick: bigint): boolean {
   const { state, rejectionReason, convenerHuman } = revision;
   const reasonMatches = state === 'REJECTED' ?
     rejectionReason === 'reopened' || rejectionReason === 'rejected' : rejectionReason === undefined;
-  if (typeof convenerHuman === 'boolean' && reasonMatches && legacySetupConsistent(revision) &&
-      legacyTimeoutConsistent(revision, latestTick) && legacyRoundsConsistent(revision, latestTick) &&
-      legacyStateMatches(revision, readPacket)) {
+  return typeof convenerHuman === 'boolean' && reasonMatches && legacySetupConsistent(revision) &&
+    legacyTimeoutConsistent(revision, latestTick) && legacyRoundsConsistent(revision, latestTick);
+}
+
+function legacyRevisionReplay(revision: MeetingFile, readPacket: ReadPacket, latestTick: bigint): LegacyReplay | undefined {
+  if (legacyRevisionConsistent(revision, latestTick) && legacyStateMatches(revision, readPacket)) {
     return legacyReceptionReplay(revision, readPacket);
   }
 }
@@ -1783,14 +1818,56 @@ export class FileStore implements Store {
     const storeHistory: LegacyPositionHistory[] = [];
     // Legacy UUIDs carry no write order. Infer the order within each meeting
     // from persisted changes, then place those histories on one position sequence.
+    // PR-D: the order is inferred from packet contents, so it can only be inferred from verified packets
+    // (trustedPacket). A meeting with a packet that fails verification, and its reopen chain, are
+    // admitted on the manifest's selection without that inference (the revision checks that need no
+    // packet still apply); readMeetings quarantines the packet.
+    const verified = new Map<string, Map<string, StoredPacket['packet']>>();
+    const unverifiable = new Set<string>();
+    for (const [id, { selected, retained }] of histories) {
+      const packets = new Map<string, StoredPacket['packet']>();
+      verified.set(id, packets);
+      const ids = new Set([selected, ...retained].flatMap(revision => revision?.packets.map(({ packet_id }) => packet_id) ?? []));
+      files.inDirectory(files.root, id, dir => files.inDirectory(dir, 'packets', packetDir => {
+        for (const packetId of ids) {
+          const read = files.readPacketOrQuarantine<unknown>(packetDir, packetId + '.json');
+          const packet = 'value' in read ? trustedPacket(read.value, id, packetId) : undefined;
+          if (packet) packets.set(packetId, packet);
+          else unverifiable.add(id);
+        }
+      }));
+    }
+    // Sets iterate entries added during iteration, so this closes over whole reopen chains.
+    for (const id of unverifiable) {
+      const reopens = histories.get(id)?.selected?.reopens;
+      if (reopens) unverifiable.add(reopens);
+      const child = reopenedBy.get(id);
+      if (child) unverifiable.add(child);
+    }
     for (const [id, { selected, retained }] of histories) {
       if (!selected || (selected.rejectionReason === 'reopened') !== reopenedBy.has(id)) throw new Error(orderError);
-      const packets = new Map<string, StoredPacket['packet']>();
+      if (unverifiable.has(id)) {
+        // Only the packet-derived inference is skipped; every revision must still be consistent on its own.
+        // A malformed revision fails closed with the order error, never with a stray TypeError.
+        const consistent = (revision: MeetingFile) => {
+          try {
+            return legacyRevisionConsistent(revision, latestTick);
+          } catch {
+            return false;
+          }
+        };
+        if (![selected, ...retained].every(consistent)) throw new Error(orderError);
+        continue;
+      }
+      const packets = verified.get(id)!;
       const readPacket: ReadPacket = packetId => {
         const cached = packets.get(packetId);
         if (cached) return cached;
-        const packet = files.inDirectory(files.root, id, dir => files.inDirectory(dir, 'packets', packetDir =>
-          files.readPacket<StoredPacket['packet']>(packetDir, packetId + '.json')));
+        const packet = files.inDirectory(files.root, id, dir => files.inDirectory(dir, 'packets', packetDir => {
+          const read = files.readPacketOrQuarantine<unknown>(packetDir, packetId + '.json');
+          return 'value' in read ? trustedPacket(read.value, id, packetId) : undefined;
+        }));
+        if (!packet) throw new Error(orderError);
         packets.set(packetId, packet);
         return packet;
       };
@@ -1896,9 +1973,16 @@ export class FileStore implements Store {
         throw new Error('Invalid council store manifest meeting revision');
       }
       const packets = state.packets.length ? files.inDirectory(dir, 'packets', packetDir =>
-        state.packets.map(({ packet_id, packet_digest, ...metadata }) => ({
-          ...metadata, packet: files.readPacket<StoredPacket['packet']>(packetDir, packet_id + '.json', packet_digest),
-        }))) : [];
+        state.packets.map(({ packet_id, packet_digest, quarantined: _untrusted, ...metadata }): StoredPacket => {
+          const read = files.readPacketOrQuarantine<unknown>(packetDir, packet_id + '.json', packet_digest);
+          const packet = 'value' in read ? trustedPacket(read.value, id, packet_id) : undefined;
+          if (packet) return { ...metadata, packet };
+          // PR-D: the meeting still loads; the packet is withheld on read and its file is left as is.
+          return {
+            ...metadata, packet: quarantinedPacket(id, packet_id),
+            quarantined: packet_digest === undefined ? { packet_id } : { packet_id, packet_digest },
+          };
+        })) : [];
       return { ...state, packets };
     }));
   }
@@ -1947,7 +2031,12 @@ export class FileStore implements Store {
       files.inDirectory(files.root, meeting.id, dir => {
         const committedRevision = committed?.meetings[meeting.id];
         const packets = files.inDirectory(dir, 'packets', packetDir => {
-          const entries = meeting.packets.map(({ packet, ...metadata }) => {
+          const entries = meeting.packets.map(({ packet, quarantined, ...metadata }) => {
+            // PR-D: a quarantined packet keeps its stored file and recorded digest; nothing is rewritten.
+            if (quarantined) {
+              return quarantined.packet_digest === undefined ? { ...metadata, packet_id: quarantined.packet_id }
+                : { ...metadata, packet_id: quarantined.packet_id, packet_digest: quarantined.packet_digest };
+            }
             const packet_id = packet.header.packet_id;
             const packet_digest = files.writePacket(packetDir, packet_id + '.json', packet,
               () => this.checkTransaction(transaction), () => {
