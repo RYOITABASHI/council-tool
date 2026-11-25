@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { describeFacadeError, FacadeError, fetchMeeting } from '../api';
-import { receptionLabels } from '../components/RoundHeader';
+import { reasonLabel, receptionLabels } from '../components/RoundHeader';
 import { SeatAvatar } from '../components/SeatAvatar';
 import { formatTime, useTheme } from '../components/styles';
 import { loadFixtureMeeting } from '../fixtures';
@@ -92,7 +92,7 @@ function PacketLog({ data, entry }: { data: MeetingData; entry: PacketEntry }) {
               <View key={row.seat_id} style={[styles.receptionRow, { borderBottomColor: colors.border }]}>
                 <Text style={[ui.body, styles.seatInfo]}>{row.seat_id}</Text>
                 <Text numberOfLines={1} style={ui.chip}>{receptionLabels[row.state]}</Text>
-                {!!row.reason?.code && <Text style={ui.muted}>{row.reason.code}</Text>}
+                {!!row.reason?.code && <Text style={ui.muted}>{reasonLabel(row.reason.code)}</Text>}
               </View>
             ))}
           </View>

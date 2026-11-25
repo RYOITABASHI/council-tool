@@ -1,10 +1,12 @@
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useState } from 'react';
+import type { TextLayoutEvent } from 'react-native';
+import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import type { MessageEntry } from '../model';
 import type { DisplayStyle } from '../storage';
 import { MentionText } from './MentionText';
 import { SeatAvatar } from './SeatAvatar';
-import { statementLead } from './statementLead';
-import { formatTime, lineHeightFor, useTheme } from './styles';
+import { layoutWasCut, leadLines, mayExceedLines, narrowestPerLine, statementLead } from './statementLead';
+import { bodyLineHeightFor, formatTime, lineHeightFor, useTheme } from './styles';
 
 type Props = {
   entry: MessageEntry; isSuperseded: boolean; onPress: () => void;
@@ -17,7 +19,22 @@ export function PacketBubble({ entry, isSuperseded, onPress, seatIds, variant = 
   const seat = packet.header.seat_id ?? 'システム';
   const body = packet.body;
   const lead = statementLead('text' in body ? body.text : body.body);
-  const hasDetails = lead.hasMore || ('claims' in body && body.claims?.some(
+  // A lead that stops before the statement does (later paragraphs dropped) ends in "…" too, so the
+  // omission shows in the bubble itself and not only through the detail link.
+  const leadText = lead.hasMore && !lead.text.endsWith('…') ? `${lead.text} …` : lead.text;
+  // The lead is cut at whole lines (numberOfLines, "…" at the end); a lead that is or may be cut
+  // always offers the detail link, whose meaning (open the full statement) is unchanged. Two checks:
+  // a pessimistic estimate at the narrowest width and current font scale (right from the first
+  // frame), and the measured layout, which catches any width or font the estimate misses. The
+  // measurement is remembered for the text it was taken on, so a changed lead is measured afresh.
+  const { fontScale } = useWindowDimensions();
+  const [cutLead, setCutLead] = useState<string | null>(null);
+  const onLeadLayout = (event: TextLayoutEvent) => {
+    const cut = layoutWasCut(event.nativeEvent.lines.length);
+    setCutLead(current => cut ? leadText : current === leadText ? null : current);
+  };
+  const leadIsCut = cutLead === leadText || mayExceedLines(leadText, leadLines, narrowestPerLine(fontScale));
+  const hasDetails = lead.hasMore || leadIsCut || ('claims' in body && body.claims?.some(
     claim => claim.statement?.trim() || claim.reversal_condition?.trim(),
   )) || ('basis' in body && !!body.basis.trim());
   const received = status.reception === 'received';
@@ -33,11 +50,12 @@ export function PacketBubble({ entry, isSuperseded, onPress, seatIds, variant = 
         <SeatAvatar seat={seat} size={reply ? 28 : 38} shape="rounded" />
         <View style={styles.column}>
           <Text style={styles.slackMeta}>
-            <Text style={[ui.label, styles.slackName]}>{seat}</Text>
+            <Text style={[styles.slackName, { color: colors.ink }]}>{seat}</Text>
             {!!time && <Text style={[ui.muted, styles.timestamp]}>{'  '}{time}</Text>}
             {received && <Text style={[ui.muted, styles.timestamp]}>{'  '}既読</Text>}
           </Text>
-          <MentionText text={lead.text} seatIds={seatIds} style={ui.body} />
+          <MentionText text={leadText} seatIds={seatIds} style={[ui.body, styles.slackBody]} numberOfLines={leadLines}
+            onTextLayout={onLeadLayout} />
           {details}
         </View>
       </Pressable>
@@ -54,7 +72,8 @@ export function PacketBubble({ entry, isSuperseded, onPress, seatIds, variant = 
           <View style={styles.bubbleWrap}>
             <View style={[styles.tail, { borderTopColor: colors.bubble }]} />
             <View style={[styles.bubble, { backgroundColor: colors.bubble }]}>
-              <MentionText text={lead.text} seatIds={seatIds} style={[ui.body, styles.bubbleText]} />
+              <MentionText text={leadText} seatIds={seatIds} style={[ui.body, styles.bubbleText]} numberOfLines={leadLines}
+            onTextLayout={onLeadLayout} />
               {details}
             </View>
           </View>
@@ -82,7 +101,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 12, borderLeftWidth: 12, borderLeftColor: 'transparent',
   },
   bubble: { borderRadius: 19, borderTopLeftRadius: 9, paddingHorizontal: 13, paddingVertical: 9, gap: 4 },
-  bubbleText: { fontSize: 15.5, lineHeight: lineHeightFor(15.5) },
+  bubbleText: { fontSize: 15.5, lineHeight: bodyLineHeightFor(15.5) },
   details: { fontSize: 12 },
   // The receipt column takes the row's spare width beside the bubble (the bubble is capped at 84%),
   // and its labels stretch across it, so "既読" / the time never sit in a box cut to their exact
@@ -91,6 +110,8 @@ const styles = StyleSheet.create({
   timestamp: { fontSize: 10.5, lineHeight: lineHeightFor(10.5), fontVariant: ['tabular-nums'] },
   slackRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 9, paddingVertical: 5, paddingHorizontal: 4, borderRadius: 6 },
   slackMeta: { lineHeight: lineHeightFor(15) },
-  slackName: { fontSize: 15 },
+  // Slack's speaker line: the name bold, in the body colour, at body size.
+  slackName: { fontSize: 15, lineHeight: lineHeightFor(15), fontWeight: '700' },
+  slackBody: { fontSize: 15, lineHeight: bodyLineHeightFor(15) },
   superseded: { opacity: 0.68 },
 });

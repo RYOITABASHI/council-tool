@@ -6,7 +6,7 @@ import {
 import { FacadeError, facadeErrorMessages, fetchMeeting, fetchMeetings } from '../api';
 import type { FacadeErrorKind } from '../api';
 import { ChatHeader, HeaderIcon } from '../components/ChatHeader';
-import { seatColor } from '../components/SeatAvatar';
+import { seatColor, seatInitials } from '../components/SeatAvatar';
 import { statementLead } from '../components/statementLead';
 import { formatTime, lineHeightFor, useTheme } from '../components/styles';
 import { loadFixtureMeeting, loadFixtureMeetings } from '../fixtures';
@@ -90,14 +90,19 @@ function GroupAvatar({ seatIds }: { seatIds: string[] }) {
     <View style={[styles.avatar, { backgroundColor: colors.pale }]} aria-hidden>
       {columns.map((column, x) => (
         <View key={x} style={[styles.avatarColumn, x > 0 && { borderLeftColor: colors.listSurface, borderLeftWidth: 1 }]}>
-          {column.map((id, y) => (
-            <View key={id} style={[styles.avatarCell, { backgroundColor: seatColor(id) },
-              y > 0 && { borderTopColor: colors.listSurface, borderTopWidth: 1 }]}>
-              <Text style={[styles.avatarInitial, { color: colors.avatarInk, fontSize: size }]}>
-                {Array.from(id)[0]?.toUpperCase()}
-              </Text>
-            </View>
-          ))}
+          {column.map((id, y) => {
+            const initials = seatInitials(id);
+            // Two-character initials (codex-a → Ca) get a smaller face so they fit a quarter cell.
+            const fontSize = Array.from(initials).length > 1 ? Math.round(size * 0.8) : size;
+            return (
+              <View key={id} style={[styles.avatarCell, { backgroundColor: seatColor(id) },
+                y > 0 && { borderTopColor: colors.listSurface, borderTopWidth: 1 }]}>
+                <Text numberOfLines={1} style={[styles.avatarInitial, { color: colors.avatarInk, fontSize }]}>
+                  {initials}
+                </Text>
+              </View>
+            );
+          })}
         </View>
       ))}
     </View>
@@ -277,7 +282,8 @@ const styles = StyleSheet.create({
   avatar: { width: 52, height: 52, borderRadius: 26, overflow: 'hidden', flexDirection: 'row' },
   avatarColumn: { flex: 1 },
   avatarCell: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  avatarInitial: { fontWeight: '700' },
+  // Stretches across its cell, so the initials are never boxed to their exact measured width.
+  avatarInitial: { alignSelf: 'stretch', textAlign: 'center', fontWeight: '800', includeFontPadding: false },
   details: { flex: 1, minWidth: 0, gap: 3 },
   side: { flexShrink: 0, alignItems: 'stretch', gap: 5 },
   topic: { fontSize: 16, fontWeight: '600', lineHeight: lineHeightFor(16) },
