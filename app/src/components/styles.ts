@@ -1,20 +1,23 @@
 import { StyleSheet, useColorScheme } from 'react-native';
 
+// Both themes lean toward a cool, blue-grey slate (Slack's #1A1D21 dark, LINE's slate announcement
+// bar) instead of a neutral grey; token roles are unchanged.
 const lightColors = {
-  page: '#F1F5F4',
+  page: '#F1F3F6',
   surface: '#FFFFFF',
   header: '#FFFFFF',
   listSurface: '#FFFFFF',
-  ink: '#17312B',
-  muted: '#4F655F',
-  border: '#CCDAD4',
+  ink: '#1B232C',
+  muted: '#55606D',
+  border: '#D3D9E1',
   accent: '#00813A',
   accentText: '#007733',
   onAccent: '#FFFFFF',
   pale: '#E0F0EA',
-  pressed: '#EBF3EE',
-  system: '#E5EFEB',
-  avatarInk: '#17312B',
+  pressed: '#ECEFF4',
+  system: '#E6EAF0',
+  /** Initials on the saturated seat-avatar fills. */
+  avatarInk: '#FFFFFF',
   amber: '#744B14',
   amberBackground: '#FFF1D5',
   red: '#902F39',
@@ -22,51 +25,51 @@ const lightColors = {
   blue: '#21538A',
   violet: '#654386',
   // LINE-style chat surfaces
-  chatBg: '#EEF1F0',
+  chatBg: '#E9EDF2',
   bubble: '#FFFFFF',
   ownBubble: '#8DE385',
   ownInk: '#0B0B0B',
-  pill: 'rgba(0, 0, 0, 0.32)',
+  pill: 'rgba(30, 41, 59, 0.6)',
   pillInk: '#FFFFFF',
-  inputBg: '#EEF1F0',
-  announce: '#FFFFFF',
+  inputBg: '#EDF0F4',
+  announce: '#F6F8FB',
   mention: '#1D5FD1',
   mentionBackground: '#E1EBFB',
-  rail: '#CCDAD4',
+  rail: '#CDD4DD',
 };
 
 const darkColors: typeof lightColors = {
-  page: '#0B0B0B',
-  surface: '#2A2A2A',
-  header: '#111111',
-  listSurface: '#111111',
-  ink: '#F2F2F2',
-  muted: '#9A9A9A',
-  border: '#2E2E2E',
+  page: '#121418',
+  surface: '#272B33',
+  header: '#16181C',
+  listSurface: '#16181C',
+  ink: '#EEF0F3',
+  muted: '#AEB5C0',
+  border: '#2F343D',
   accent: '#00843C',
   accentText: '#42DF80',
   onAccent: '#FFFFFF',
-  pale: '#242F28',
-  pressed: '#1B1B1B',
-  system: '#1D1D1D',
-  avatarInk: '#17312B',
+  pale: '#213029',
+  pressed: '#22262D',
+  system: '#22262C',
+  avatarInk: '#FFFFFF',
   amber: '#FFD392',
   amberBackground: '#40301B',
   red: '#FFADB5',
   redBackground: '#44262B',
   blue: '#9CC9FF',
   violet: '#D7BAF7',
-  chatBg: '#1E1E1E',
-  bubble: '#2C2C2C',
+  chatBg: '#1A1D21',
+  bubble: '#30353E',
   ownBubble: '#8DE385',
   ownInk: '#0B0B0B',
-  pill: '#2C2C2C',
-  pillInk: '#E6E6E6',
-  inputBg: '#262626',
-  announce: '#2A2A2A',
+  pill: '#2E343D',
+  pillInk: '#E3E7ED',
+  inputBg: '#262A31',
+  announce: '#2D3542',
   mention: '#7FA8FF',
   mentionBackground: '#22304A',
-  rail: '#3A3A3A',
+  rail: '#3A404A',
 };
 
 /**
@@ -76,6 +79,14 @@ const darkColors: typeof lightColors = {
  */
 export function lineHeightFor(fontSize: number): number {
   return Math.ceil(fontSize * 1.5);
+}
+
+/**
+ * Line height for statement bodies (bubbles and thread posts): one step looser than lineHeightFor,
+ * closer to the reading rhythm of LINE / Slack. Still proportional, and never below lineHeightFor.
+ */
+export function bodyLineHeightFor(fontSize: number): number {
+  return Math.ceil(fontSize * 1.65);
 }
 
 function makeUi(colors: typeof lightColors) {

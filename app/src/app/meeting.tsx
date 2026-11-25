@@ -9,7 +9,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { describeFacadeError, FacadeError, fetchMeeting, fetchRunner, postApprove, postMention } from '../api';
 import { AgendaAnnouncement } from '../components/AgendaAnnouncement';
 import { AttestRow } from '../components/AttestRow';
-import { ChatHeader, HeaderIcon } from '../components/ChatHeader';
+import { ChatHeader, HeaderIcon, HeaderPill } from '../components/ChatHeader';
 import { GateCard } from '../components/GateCard';
 import { PacketBubble } from '../components/PacketBubble';
 import { RoundHeader } from '../components/RoundHeader';
@@ -27,6 +27,7 @@ import { isPacketKind } from '../types';
 import type { ApproveDecision, GetPacketsResponse, MeetingData, PacketEntry, Round, RoundState, RunnerState } from '../types';
 
 const approvalLabels: Record<ApproveDecision, string> = { approve: '承認する', reject: '却下する' };
+const styleNames: Record<DisplayStyle, string> = { line: 'ライン', slack: 'スレッド' };
 
 type Connection = { facadeUrl: string; token: string; id: string };
 type LoadedMeeting = { data: MeetingData; runner?: RunnerState; connection?: Connection };
@@ -720,7 +721,10 @@ function MeetingView({ fixture, meetingId }: { fixture: boolean; meetingId?: str
       behavior={!fixture && Platform.OS === 'ios' ? 'padding' : undefined}>
       <ChatHeader title={(data && topicOf(data.packets)) || '会議'} count={state?.seats.length}
         onBack={goBack} backgroundColor={colors.chatBg}>
-        <HeaderIcon glyph="⇄" label={nextStyle === 'line' ? 'ライン風に切り替え' : 'スレッド風に切り替え'}
+        {/* Reads as the current style; a tap switches to the other one. */}
+        <HeaderPill text={styleNames[displayStyle]}
+          label={`表示スタイル：${styleNames[displayStyle]}風`}
+          hint={`${styleNames[nextStyle]}風に切り替え`}
           disabled={!settingsReady} onPress={() => chooseStyle(nextStyle)} />
         <HeaderIcon glyph="↻" label="更新" disabled={refreshDisabled} onPress={update} />
       </ChatHeader>

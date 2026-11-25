@@ -1,4 +1,4 @@
-import type { StyleProp, TextStyle } from 'react-native';
+import type { StyleProp, TextLayoutEvent, TextStyle } from 'react-native';
 import { Text } from 'react-native';
 import { useTheme } from './styles';
 
@@ -13,8 +13,12 @@ export function mentionedSeat(text: string, seatIds: readonly string[]): string 
 }
 
 /** Body text with `@seat` mentions highlighted Slack-style. */
-export function MentionText({ text, seatIds, style }: {
+export function MentionText({ text, seatIds, style, numberOfLines, onTextLayout }: {
   text: string; seatIds: readonly string[]; style?: StyleProp<TextStyle>;
+  /** Cut at whole lines with a trailing "…" (the lead of a statement). */
+  numberOfLines?: number;
+  /** The measured line layout, so the caller can tell whether the text was cut. */
+  onTextLayout?: (event: TextLayoutEvent) => void;
 }) {
   const { colors } = useTheme();
   const parts: (string | { seat: string; raw: string })[] = [];
@@ -29,7 +33,7 @@ export function MentionText({ text, seatIds, style }: {
   if (last < text.length) parts.push(text.slice(last));
 
   return (
-    <Text selectable style={style}>
+    <Text selectable style={style} numberOfLines={numberOfLines} ellipsizeMode="tail" onTextLayout={onTextLayout}>
       {parts.map((part, index) => typeof part === 'string' ? part : (
         <Text key={index} style={{
           color: colors.mention, backgroundColor: colors.mentionBackground, fontWeight: '600',
