@@ -15,6 +15,14 @@ APP_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 mkdir -p "$COUNCIL_HOME"
 export COUNCIL_HOME COUNCIL_HTTP_PORT COUNCIL_PIDFILE
 
+# First-run pairing: ask the facade to arm its one-shot loopback claim
+# endpoint. The facade itself grants the arm only when COUNCIL_HOME holds
+# no claimed record for the current token generation, so restarts after a
+# claim stay disarmed and a new token re-arms. Set COUNCIL_PAIRING_ARM=0 to
+# opt out; any value other than 1 leaves the facade disarmed.
+COUNCIL_PAIRING_ARM=${COUNCIL_PAIRING_ARM-1}
+export COUNCIL_PAIRING_ARM
+
 if [ -f "$COUNCIL_PIDFILE" ]; then
     pid=$(cat "$COUNCIL_PIDFILE")
     case $pid in
